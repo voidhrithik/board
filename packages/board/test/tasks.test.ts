@@ -973,10 +973,14 @@ describe('a not-before date', () => {
     expect(await stateOf(ada, issue.id)).toBe('ready')
     expect(await stateOf(ada, batch.body.tasks[0].id)).toBe('ready')
 
-    // One held for a person when its time came is ready once the hold is lifted.
+    // One held for a person when its time came is ready once the hold is lifted, and one let go before it waits for it.
     const held = await task(ada, 'held', { notBefore: at(4 * HOUR) })
     await ada('POST', `/tasks/${held.id}/block`, { reason: 'which release?' })
+    const early = await task(ada, 'let go early', { notBefore: at(4 * HOUR) })
+    await ada('POST', `/tasks/${early.id}/block`, { reason: 'hold on' })
+    expect((await ada('POST', `/tasks/${early.id}/unblock`)).body.task.task.state).toBe('waiting')
     await advance(HOUR)
+    expect(await stateOf(ada, early.id)).toBe('ready')
     expect(await stateOf(ada, held.id)).toBe('blocked')
     expect((await ada('POST', `/tasks/${held.id}/unblock`)).body.task.task.state).toBe('ready')
     // And one that comes to need nothing still waits for its time.
@@ -1009,6 +1013,12 @@ describe('a not-before date', () => {
       ['task.ready', next.id],
       ['task.claimed', next.id],
     ])
+    // A second early counts, as it does for a timer, which can fire that early: what completes then readies what waits for it.
+    const build = await task(ada, 'build it')
+    const deploy = await task(ada, 'deploy it', { needs: [build.id], notBefore: at(3 * MINUTE) })
+    vi.setSystemTime(T0 + 3 * MINUTE - 500)
+    await ada('POST', `/tasks/${build.id}/complete`, await claim(ada, build.id))
+    expect(await stateOf(ada, deploy.id)).toBe('ready')
   })
 
   it("changes as what it needs does: its owner's, while no one holds it and it isn't finished", async () => {

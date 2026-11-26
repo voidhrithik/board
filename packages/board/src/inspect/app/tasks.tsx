@@ -197,7 +197,13 @@ function TaskRow({ root, state, open }: { root: TaskRoot; state: State; open: bo
         {current === 'ready' && (task.state === 'claimed' ? 'lease ran out' : task.for ? `for ${nameOf(state, task.for)}` : '')}
         {current === 'waiting' && (
           <>
-            needs <Needs ids={task.needs} state={state} />
+            {task.needs.length > 0 && (
+              <>
+                needs <Needs ids={task.needs} state={state} />
+              </>
+            )}
+            {task.needs.length > 0 && task.notBefore && ' · '}
+            {task.notBefore && <span title={new Date(task.notBefore).toLocaleString()}>until {new Date(task.notBefore).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>}
           </>
         )}
         {current === 'blocked' && (task.blocked?.kind ?? task.blocked?.reason)}

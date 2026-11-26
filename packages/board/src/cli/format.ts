@@ -37,7 +37,10 @@ export function authorName(message: Pick<MessageView, 'author' | 'by'>): string 
 /** A time as the CLI says one it was given: to the minute when that's all it has, as people write them. */
 export const shortTime = (iso: string): string => iso.replace(/:00\.000Z$/, 'Z')
 
-/** How long until a task that waits for a time may start, while that time is ahead: `starts in 2d`. */
+/**
+ * How long until a task that waits for a time may start, while that time is ahead: `starts in 2d`.
+ * It's `ago` from now to that time, to the coarse unit a row has room for.
+ */
 const startNote = (task: TaskView, now: number): string =>
   task.state === 'waiting' && task.notBefore && Date.parse(task.notBefore) > now ? `starts in ${ago(new Date(now).toISOString(), Date.parse(task.notBefore))}` : ''
 

@@ -40,7 +40,7 @@ export type Task = {
 }
 
 /** Whether a task waits for something now, as the fold can tell: a task it needs, or a time. `task.ready` ends it. */
-const waits = (task: Task) => task.needs.length > 0 || Boolean(task.notBefore)
+export const taskWaits = (task: Pick<Task, 'needs' | 'notBefore'>) => task.needs.length > 0 || Boolean(task.notBefore)
 
 export type Message = {
   id: number
@@ -267,14 +267,14 @@ function foldTask(task: Task, event: Exclude<TaskEvent, { type: 'task.created' }
       // any task: `task.ready` follows at once when they've all completed. One held for a person stays held.
       if (task.state !== 'waiting' && task.state !== 'ready' && task.state !== 'blocked') return false
       task.needs = [...event.payload.needs]
-      if (task.state !== 'blocked') task.state = waits(task) ? 'waiting' : 'ready'
+      if (task.state !== 'blocked') task.state = taskWaits(task) ? 'waiting' : 'ready'
       return true
     case 'task.not_before_changed':
       // It changes as what it needs does: while no one holds it and it isn't finished. It waits again while it has a
       // time or a task to wait for, and `task.ready` follows once both hold. One held for a person stays held.
       if (task.state !== 'waiting' && task.state !== 'ready' && task.state !== 'blocked') return false
       task.notBefore = event.payload.notBefore
-      if (task.state !== 'blocked') task.state = waits(task) ? 'waiting' : 'ready'
+      if (task.state !== 'blocked') task.state = taskWaits(task) ? 'waiting' : 'ready'
       return true
     case 'task.ready':
       if (task.state !== 'waiting') return false
@@ -319,7 +319,7 @@ function foldTask(task: Task, event: Exclude<TaskEvent, { type: 'task.created' }
     case 'task.unblocked':
       if (task.state !== 'blocked') return false
       // Back to waiting when it waits for any task or a time: `task.ready` follows at once when both hold.
-      task.state = waits(task) ? 'waiting' : 'ready'
+      task.state = taskWaits(task) ? 'waiting' : 'ready'
       task.blocked = null
       return true
     case 'task.canceled':

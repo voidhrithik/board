@@ -4,7 +4,7 @@ import { LEASE_DEFAULT_S, type MessageView, type TaskClaim } from '../api/routes
 import type { Protocol } from '../api/protocol.ts'
 import { LEASES_SESSION, leasesContract, type LeaseEvents } from '../contract/contract.ts'
 import type { BoardEvent } from '../contract/events.ts'
-import { foldMessages, type Message, type MessagesState, type Task } from '../contract/folds.ts'
+import { foldMessages, taskWaits, type Message, type MessagesState, type Task } from '../contract/folds.ts'
 import { actorsReducer, channelsReducer } from '../contract/reducers.ts'
 import { OPEN_TASK_STATES, TASK_BATCH_MAX, TASK_KEY_MAX, TASK_LABEL, TASK_NEEDS_MAX, TASK_NOTE_MAX, TaskHoldKind, type TaskState } from '../contract/schemas.ts'
 import { batchPlan, type BatchNeed } from '../contract/task-batch.ts'
@@ -86,8 +86,13 @@ const finished = (task: Task) => task.state === 'completed' || task.state === 'f
 /** A not-before time as a request gives it, as the board keeps it: in UTC, or null for none. */
 const isoOf = (time: string | null | undefined): string | null => (time ? new Date(time).toISOString() : null)
 
-/** Whether a task's not-before time has come by `at`, or it has none. */
-const come = (task: Pick<Task, 'notBefore'>, at: number) => !task.notBefore || Date.parse(task.notBefore) <= at
+/**
+ * Whether a task's not-before time has come by `at`, or it has none. A second early counts, as it
+ * does for its timer, which can fire that early: no write is stricter than the timer it stands in for.
+ */
+const come = (task: Pick<Task, 'notBefore'>, at: number) => !task.notBefore || Date.parse(task.notBefore) - at <= EARLY_MS
+/** Whether a task waits for a time that has come by `at`: ready once what it needs has completed, though its timer may not have fired. */
+const timeCame = (task: Task, at: number) => task.state === 'waiting' && Boolean(task.notBefore) && come(task, at)
 
 /** What a task waits for, as a refusal says it: the tasks it needs, and the time before which it isn't ready. */
 const waitingFor = (needs: readonly number[], notBefore: string | null) =>
@@ -190,7 +195,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       const task = root?.task
       if (!root || !task || task.state !== 'waiting' || !task.notBefore || Date.parse(task.notBefore) !== at) return { position, events: [] }
       // Delivered early: it waits again.
-      if (at - Date.now() > EARLY_MS) {
+      if (!come(task, Date.now())) {
         read.early = true
         return { position, events: [] }
       }
@@ -521,21 +526,25 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       const now = Date.now()
       // One assigned to the caller first, then the oldest unassigned one of an owner it takes tasks from.
       // One that waits for a time that has come is ready, once what it needs has completed: its timer may
-      // not have fired, or there's none, so the claim readies it in its own write.
+      // not have fired, or there's none, so the claim readies it in its own write. Those are read only when
+      // nothing ready is there, since a board can have many tasks waiting, and few of them for a time.
       let pool: Root | null = null
       let mine: Root | null = null
-      for await (const root of rootsAt(filter, ['ready', 'claimed', 'waiting'], position)) {
-        const { task } = root
-        const begun = task.state === 'waiting' && Boolean(task.notBefore) && come(task, now)
-        if (stateNow(task, now) !== 'ready' && !begun) continue
-        const assigned = assignedTo(task, identity)
-        if (!assigned && !(!task.for && !pool && owners.has(task.owner))) continue
-        if (begun && !(await satisfied(task, position))) continue
-        if (assigned) {
-          mine = root
-          break
+      for (const states of [['ready', 'claimed'], ['waiting']] as const) {
+        for await (const root of rootsAt(filter, states, position)) {
+          const { task } = root
+          const begun = timeCame(task, now)
+          if (stateNow(task, now) !== 'ready' && !begun) continue
+          const assigned = assignedTo(task, identity)
+          if (!assigned && !(!task.for && !pool && owners.has(task.owner))) continue
+          if (begun && !(await satisfied(task, position))) continue
+          if (assigned) {
+            mine = root
+            break
+          }
+          pool = root
         }
-        pool = root
+        if (mine || pool) break
       }
       const root = mine ?? pool
       // A caller that stopped waiting takes nothing: a task claimed for no one would sit out its lease.
@@ -588,7 +597,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
           events: (root) => {
             const about = { id: root.id, thread: root.thread }
             const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, ...(notBefore ? { notBefore } : {}), by: author } }]
-            if ((needs.ids.length > 0 || notBefore) && !waits) events.push({ type: 'task.ready', payload: about })
+            if (taskWaits({ needs: needs.ids, notBefore }) && !waits) events.push({ type: 'task.ready', payload: about })
             if (input.claim) events.push(...claiming(root, null, identity, input.lease, token).events)
             return events
           },
@@ -628,7 +637,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         const found = outside.length === 0 ? new Map<number, Message>() : await writes().reads.tables.messagesAt(outside, position)
         const needs = named.map((refs) => needsAmong(principal.access, refs, found))
         const now = Date.now()
-        const readied = needs.map(({ ids, completed }, at) => (ids.length > 0 || Boolean(notBefores[at])) && completed && inside[at]!.length === 0 && come({ notBefore: notBefores[at]! }, now))
+        const readied = needs.map(({ ids, completed }, at) => taskWaits({ needs: ids, notBefore: notBefores[at] || null }) && completed && inside[at]!.length === 0 && come({ notBefore: notBefores[at] || null }, now))
         return {
           position,
           counts: readied.map((ready) => (ready ? 2 : 1)),
@@ -666,7 +675,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         if (input.claim && assigned !== null && assigned !== actor.id) throw conflict('task_assigned', `#${id} would be assigned to ${assigned}: it wasn't made a task`)
         const about = { id, thread: found.thread }
         const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, ...(notBefore ? { notBefore } : {}), by: author } }]
-        if ((needs.ids.length > 0 || notBefore) && !waits) events.push({ type: 'task.ready', payload: about })
+        if (taskWaits({ needs: needs.ids, notBefore }) && !waits) events.push({ type: 'task.ready', payload: about })
         if (input.claim) {
           const claimed = claiming(found, null, identity, input.lease, token)
           events.push(...claimed.events)
@@ -750,7 +759,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         }
         // One that waits for a time that has come is ready once what it needs has completed: its timer may not have
         // fired, or there's none, so the claim readies it in its own write.
-        const begun = task.state === 'waiting' && Boolean(task.notBefore) && come(task, Date.now()) && (await satisfied(task, position))
+        const begun = timeCame(task, Date.now()) && (await satisfied(task, position))
         const standing: Root = begun ? { ...found, task: { ...task, state: 'ready' } } : found
         claimable(standing, identity)
         const claimed = claiming(found, standing.task, identity, lease, token)
@@ -836,7 +845,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         const about = { id, thread: found.thread }
         // The fold puts a task that needs any, or has a time, back to waiting: what it needs may have completed, and
         // its time come, while it was held.
-        const ready = (found.task.needs.length > 0 || Boolean(found.task.notBefore)) && come(found.task, Date.now()) && (await satisfied(found.task, position))
+        const ready = taskWaits(found.task) && come(found.task, Date.now()) && (await satisfied(found.task, position))
         return [{ type: 'task.unblocked', payload: { ...about, by: identity.author } }, ...(ready ? [{ type: 'task.ready' as const, payload: about }] : [])]
       })
       return { task: await shown(identity, root) }
@@ -886,7 +895,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         return [
           ...(over ? [{ type: 'task.expired' as const, payload: { ...about, epoch: task.epoch } }] : []),
           { type: 'task.needs_changed', payload: { ...about, needs: needs.ids, by: identity.author } },
-          ...((needs.ids.length > 0 || task.notBefore) && needs.completed && come(task, Date.now()) && task.state !== 'blocked' ? [{ type: 'task.ready' as const, payload: about }] : []),
+          ...(taskWaits({ needs: needs.ids, notBefore: task.notBefore }) && needs.completed && come(task, Date.now()) && task.state !== 'blocked' ? [{ type: 'task.ready' as const, payload: about }] : []),
         ]
       })
       return { task: await shown(identity, root) }
@@ -910,7 +919,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         if (task.state === 'claimed' && !over) throw conflict('task_claimed', `#${id} is claimed until ${task.claim!.until}: when it may start changes once no one holds it`)
         if ((task.notBefore || null) === notBefore) return []
         const about = { id, thread: found.thread }
-        const ready = (task.needs.length > 0 || Boolean(notBefore)) && task.state !== 'blocked' && come({ notBefore }, Date.now()) && (await satisfied(task, position))
+        const ready = taskWaits({ needs: task.needs, notBefore }) && task.state !== 'blocked' && come({ notBefore }, Date.now()) && (await satisfied(task, position))
         return [
           ...(over ? [{ type: 'task.expired' as const, payload: { ...about, epoch: task.epoch } }] : []),
           { type: 'task.not_before_changed', payload: { ...about, notBefore, by: identity.author } },

@@ -52,7 +52,7 @@ const REFUSALS: Record<string, string> = {
   claim_lost: "this tab's claim is over: it was released, taken over, or its lease ran out. Claim the task again to go on.",
   task_claimed: 'someone holds this task now, until their lease ends',
   task_assigned: "it's assigned to someone else, and only they claim it",
-  task_waiting: 'it still waits for the tasks it needs',
+  task_waiting: 'it still waits for the tasks it needs, or for its time',
   task_blocked: "it's held for a person: unblock it first",
   task_finished: "it's finished already",
   task_not_owned: "this is someone else's task: its owner changes it, or anyone with manage in its channel",
