@@ -13,7 +13,7 @@ const ADA = 'vercel:user:u_ada'
 const CI = 'github:repo:123456'
 
 type Call = ReturnType<typeof caller>
-type Asked = { key?: string; text: string; labels?: Record<string, string>; noSync?: boolean; attachments?: string[]; needs?: (string | { key: string })[]; for?: string | null }
+type Asked = { key?: string; text: string; labels?: Record<string, string>; noSync?: boolean; attachments?: string[]; needs?: (string | { key: string })[]; for?: string | null; notBefore?: string }
 
 async function setup(options: Parameters<typeof testBoard>[0] = {}) {
   const board = testBoard({ scheduler: fakeQueue().scheduler, ...options })
@@ -196,6 +196,7 @@ describe('several tasks made at once', () => {
       'a file': [{ ...plan[0]!, attachments: [file.id] }, plan[1]!],
       'kept off platforms': [{ ...plan[0]!, noSync: true }, plan[1]!],
       'an assignee': [{ ...plan[0]!, for: `${ADA}+fixer` }, plan[1]!],
+      'a not-before time': [{ ...plan[0]!, notBefore: '2099-11-30T09:00:00Z' }, plan[1]!],
       'one more need': [plan[0]!, { ...plan[1]!, needs: [{ key: 'fix' }, ids[0]!] }],
       'the other order': [plan[1]!, plan[0]!],
     }))
