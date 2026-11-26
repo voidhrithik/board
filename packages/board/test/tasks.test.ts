@@ -8,7 +8,8 @@ import type { Can } from '../src/access/index.ts'
 import type { Middleware, Watcher } from '../src/server/index.ts'
 import type { BoardEvent } from '../src/contract/events.ts'
 import { block } from '../src/contract/blocks.ts'
-import { foldMessages, type MessagesState } from '../src/contract/folds.ts'
+import { foldMessages, type MessagesState, type Task } from '../src/contract/folds.ts'
+import { taskView } from '../src/server/feed.ts'
 import { memory } from '../src/store/memory.ts'
 import { http } from '../src/backend-http/index.ts'
 import { board as projectBoard, BOARD_URL, caller, deploymentToken, personToken, testBoard, workflowToken } from './harness.ts'
@@ -1980,6 +1981,12 @@ describe("the fold, for whoever folds the board's events themselves", () => {
     // A claim holds it as it was, and a finished task's stays.
     expect(startOf(created, claimed(1), later).task).toMatchObject({ state: 'claimed', notBefore: null })
     expect(startOf(created, ['task.canceled', { ...about, reason: 'no', by }], later).task).toMatchObject({ state: 'canceled', notBefore: null })
+  })
+
+  it('shows a task kept before not-before dates, which the tables hold as it was folded then, with none', () => {
+    const kept = folded(created).byId[1]!.task!
+    const { notBefore: _notBefore, ...before } = kept
+    expect(taskView(before as Task).notBefore).toBeNull()
   })
 
   it('keeps tasks on roots that are there: a reply is no task, and a deleted root wears no label', () => {
