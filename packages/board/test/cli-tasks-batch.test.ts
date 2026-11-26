@@ -163,6 +163,9 @@ describe('vb tasks create --file', () => {
       expect((await refused([{ text: 'review it', needs: ['812', odd] }]))[0]).toBe(`error: Task 1 of plan.json needs ${JSON.stringify(odd)}. A need is a key of the plan's own, like "fix" or {"key": "fix"}, or a task's ID as vb prints it or as {"id": "…"}.`)
     expect((await refused([{ text: 'review it', needs: [{ task: 'a'.repeat(100) }] }]))[0]).toBe(`error: Task 1 of plan.json needs {"task":"${'a'.repeat(50)}…. A need is a key of the plan's own, like "fix" or {"key": "fix"}, or a task's ID as vb prints it or as {"id": "…"}.`)
     expect((await refused([{ text: 'review it', needs: '812' }]))[0]).toBe('error: Task 1 of plan.json has needs that aren\'t a list, such as [{"key": "fix"}, "812"].')
+    // How soon it's taken is an integer.
+    for (const odd of [1.5, 'high', '2', null])
+      expect((await refused([{ text: 'fix it' }, { text: 'ship it', priority: odd }]))[0]).toBe(`error: Task 2 of plan.json has priority ${JSON.stringify(odd)}. A priority is an integer, higher first, such as 2 or -1.`)
     // From stdin, and for a program: the same, as one document.
     const piped = await vb(['tasks', 'create', 'typos', '--file', '-', '--json'], {}, JSON.stringify([{ text: 'fix it', labls: { step: 'fix' } }]))
     expect([piped.code, piped.stdout]).toEqual([2, ''])

@@ -2324,6 +2324,8 @@ function checkPlan(plan: Record<string, unknown>[], where: string): void {
         next: [planHelp()],
       })
     }
+    if ('priority' in task && !Number.isSafeInteger(task.priority))
+      throw usage(`Task ${at + 1} of ${where} has priority ${JSON.stringify(task.priority)}. A priority is an integer, higher first, such as 2 or -1.`, { next: [planHelp()] })
     if (!('needs' in task)) continue
     const needs = '[{"key": "fix"}, "812"]'
     if (!Array.isArray(task.needs)) throw usage(`Task ${at + 1} of ${where} has needs that aren't a list, such as ${needs}.`, { next: [planHelp()] })
