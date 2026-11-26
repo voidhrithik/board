@@ -34,8 +34,8 @@ export function authorName(message: Pick<MessageView, 'author' | 'by'>): string 
   return message.author ? shownName(message.author) : message.by.actor
 }
 
-/** A time as the CLI says one it was given: to the minute when that's all it has, as people write them. */
-export const shortTime = (iso: string): string => iso.replace(/:00\.000Z$/, 'Z')
+/** A time as the CLI says one it was given: to the minute or the second, as people write them. */
+export const shortTime = (iso: string): string => iso.replace(/(:00)?\.000Z$/, 'Z')
 
 /**
  * How long until a task that waits for a time may start, while that time is ahead: `starts in 2d`.

@@ -232,7 +232,9 @@ $ vb tasks not-before 816 --none
 - **A row and `read` say when it may start:** `starts in 3d`, while it waits.
 - **Its owner changes it** with `vb tasks not-before <id> <time>`, or takes it
   off with `--none`, while no one holds the task and it isn't finished. A time
-  that has passed readies it in the same write.
+  that has passed readies it in the same write. With `--none` and nothing it
+  needs, the change itself readies it, as `needs --none` does: no `task.ready`
+  follows.
 
 ## A plan of tasks
 

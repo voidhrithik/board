@@ -158,7 +158,7 @@ describe('tasks', () => {
     // When it may start, as it's made and changed: the time, to the minute when that's all it has, or that it has none.
     expect(formatEvent(event('task.created', { id: '812', needs: [], for: null, notBefore: '2026-11-30T09:00:00.000Z' }, actor))).toBe('#812  work  task created by claude via julian · waits until 2026-11-30T09:00Z')
     expect(formatEvent(event('task.not_before_changed', { id: '812', notBefore: '2026-11-30T09:00:00.000Z' }, actor))).toBe('#812  work  task waits until 2026-11-30T09:00Z by claude via julian')
-    expect(formatEvent(event('task.not_before_changed', { id: '812', notBefore: '2026-11-30T09:00:30.000Z' }, actor))).toBe('#812  work  task waits until 2026-11-30T09:00:30.000Z by claude via julian')
+    expect(formatEvent(event('task.not_before_changed', { id: '812', notBefore: '2026-11-30T09:00:30.000Z' }, actor))).toBe('#812  work  task waits until 2026-11-30T09:00:30Z by claude via julian')
     expect(formatEvent(event('task.not_before_changed', { id: '812', notBefore: null }, actor))).toBe('#812  work  task waits for no time by claude via julian')
   })
 })
