@@ -1896,6 +1896,10 @@ describe("the fold, for whoever folds the board's events themselves", () => {
     expect(made.priority).toBe(0)
     const raised = folded(['task.created', { ...about, needs: [], for: null, priority: 2, by }], ['task.priority_changed', { ...about, priority: 5, by }])
     expect(raised.byId[1]!.task!.priority).toBe(5)
+    // A finished task's stays as it was, and the same priority is no version of it.
+    const done = folded(created, claimed(1), ['task.completed', { ...about, epoch: 1, result: null, by }], ['task.priority_changed', { ...about, priority: 4, by }])
+    expect(done.byId[1]!.task!.priority).toBe(0)
+    expect(folded(created, ['task.priority_changed', { ...about, priority: 0, by }]).byId[1]!.version).toBe(3)
     // A task kept before priorities, as the tables hold it, shows 0.
     const { priority: _priority, ...before } = made
     expect(taskView(before as Task).priority).toBe(0)

@@ -84,8 +84,12 @@ const stateNow = (task: Task, at: number): TaskState => (lapsed(task, at) ? 'rea
 const finished = (task: Task) => task.state === 'completed' || task.state === 'failed' || task.state === 'canceled'
 /** A new task's priority on its `task.created`: none for 0, so a task made without one is written as before. */
 const ranked = (priority: number | undefined) => (priority ? { priority } : {})
-/** The order a claim of the next ready task takes tasks in: the higher priority first, then the oldest. */
-const byPriority = (a: Root, b: Root) => b.task.priority - a.task.priority || a.id - b.id
+/**
+ * The order a claim of the next ready task takes tasks in: the higher priority first. Roots come
+ * oldest first and a tie keeps their order, so the oldest of a priority goes first. A task the
+ * tables kept before priorities has none: 0.
+ */
+const byPriority = (a: Root, b: Root) => (b.task.priority || 0) - (a.task.priority || 0)
 
 /** How many tasks a change of what a task needs walks, behind the ones it adds, to see that none waits for it. */
 export const NEEDS_WALK_MAX = 500
