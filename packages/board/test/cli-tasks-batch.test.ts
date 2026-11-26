@@ -156,7 +156,7 @@ describe('vb tasks create --file', () => {
     expect((await refused([{ text: 'fix it' }, { text: 'review it' }, { text: 'ship it', 'no-sync': true }]))[0]).toBe('error: Unknown key "no-sync" on task 3 of plan.json. Did you mean "noSync"?')
     expect((await refused([{ text: 'fix it', Needs: [] }]))[0]).toBe('error: Unknown key "Needs" on task 1 of plan.json. Did you mean "needs"?')
     // One that's near none is said with what a task takes.
-    expect((await refused([{ text: 'fix it', priority: 'high' }])).slice(0, 2)).toEqual(['error: Unknown key "priority" on task 1 of plan.json.', '  a task takes key, text, labels, needs, for, noSync, attachments'])
+    expect((await refused([{ text: 'fix it', priority: 'high' }])).slice(0, 2)).toEqual(['error: Unknown key "priority" on task 1 of plan.json.', '  a task takes key, text, labels, needs, for, due, noSync, attachments'])
     // What a task waits for is a list, each a task's ID or a key of the plan's own.
     expect((await refused([{ key: 'fix', text: 'fix it' }, { text: 'review it', needs: [{ key: 'fix' }, { ref: 'fix' }] }]))[0]).toBe('error: Task 2 of plan.json needs {"ref":"fix"}. A need is a key of the plan\'s own, like "fix" or {"key": "fix"}, or a task\'s ID as vb prints it or as {"id": "…"}.')
     for (const odd of [true, null, ['812'], { id: 812 }, { id: '' }, { id: '812', key: 'fix' }, { key: 'fix', text: 'fix it' }, { key: 5 }, '', '#', 1.5])
