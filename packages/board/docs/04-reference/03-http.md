@@ -116,8 +116,8 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 | POST | `/schedules` | Schedule a message. Answers 201 `{ schedule, mentions? }`. See [Schedules](#schedules) |
 | GET | `/schedules` | `{ schedules }`. Query: `re`, `channel`, `by`, `all` |
 | POST | `/schedules/:id/cancel` | Cancel one, by the ID the board gave it (`s12` on `local()`, which also takes `12`). Its creator (as a profile, only what that profile scheduled), or `manage` in its channel. Answers `{ schedule, canceled }` |
-| POST | `/tasks` | `{ channel, text, labels?, noSync?, attachments?, id?, needs?, for?, claim?, lease? }` starts a thread as a task, or `{ re, needs?, for?, claim?, lease? }` makes the thread `re` roots one. Answers 201 `{ task, claim? }`, where `task` is its root. See [Tasks](#tasks) |
-| POST | `/tasks/batch` | `{ channel, tasks, id? }`: starts a thread for each of 1 to 100 tasks, in one write. A task is `{ key?, text, labels?, noSync?, attachments?, needs?, for? }`. Answers 201 `{ tasks }`, their roots in order |
+| POST | `/tasks` | `{ channel, text, labels?, noSync?, attachments?, id?, needs?, for?, notBefore?, claim?, lease? }` starts a thread as a task, or `{ re, needs?, for?, notBefore?, claim?, lease? }` makes the thread `re` roots one. Answers 201 `{ task, claim? }`, where `task` is its root. See [Tasks](#tasks) |
+| POST | `/tasks/batch` | `{ channel, tasks, id? }`: starts a thread for each of 1 to 100 tasks, in one write. A task is `{ key?, text, labels?, noSync?, attachments?, needs?, for?, notBefore? }`. Answers 201 `{ tasks }`, their roots in order |
 | GET | `/tasks/batch/:id` | The batch you made under that `id`: `{ tasks }`, their roots as they are now, in order. 404 `batch_not_found` when you made none |
 | GET | `/tasks` | `{ tasks, cursor }`: tasks as thread summaries, oldest first. Query: `channel`, `state`, `label`, `by`, `owner`, `for`, `needs`, `after`, `limit` |
 | POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait? }`: claims the oldest ready task in a channel or subtree. Answers `{ task, claim }`, or `{ task: null }` |
@@ -131,6 +131,7 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 | POST | `/tasks/:id/reopen` | No body. A failed task is ready again |
 | POST | `/tasks/:id/assign` | `{ for }`: one of the owner's actors, or `null` for anyone who may claim it |
 | POST | `/tasks/:id/needs` | `{ needs }`: the IDs of the tasks it waits for now, in place of what it waited for |
+| POST | `/tasks/:id/not-before` | `{ notBefore }`: the time before which it isn't ready, an ISO time, or `null` for none. A task no one holds that hasn't finished |
 | POST | `/tasks/:id/cancel` | `{ reason }`: any task that hasn't completed or been canceled |
 | GET | `/grants` | `{ grants }`: each one's `id`, `principals`, `can`, `capped`, `by`, and `at`. Needs `manage` at `*`, or a team owner. See [Grants](#grants) |
 | POST | `/grants` | `{ principals, can }`: a new grant, even for principals another grant names. Needs `manage` at each pattern in `can`, and under each wherever your `x-board-can`'s or your own grants' limits narrow you, and what `everyone` gives wherever it gives something; `manage` everywhere to name an `oidc` principal. A key it doesn't know is 400. Answers `{ grant }` One its caller couldn't take back, since it takes their own `manage` at a pattern it names, is 409 `grant_lockout` unless the body says `lockMeOut: true`, as any grant write's may |
@@ -460,7 +461,8 @@ A task is a thread with a state. Its ID is its root's, and its root carries
   "claim": { "actor": "vercel:user:u_abc123+claude", "until": "2026-10-08T14:17:11.000Z" },
   "blocked": null,
   "result": null,
-  "reason": null
+  "reason": null,
+  "notBefore": null
 }
 ```
 
@@ -471,6 +473,7 @@ A task is a thread with a state. Its ID is its root's, and its root carries
 | `by` | the actor it did that as: the principal itself, or one of its profiles. That actor changes the task as its owner, and so does the principal as itself |
 | `for` | the one actor that claims it, or `null` |
 | `needs` | the tasks it waits for, by ID. It's `waiting` until each has completed |
+| `notBefore` | the time before which it isn't ready, in UTC, or `null`. It's `waiting` until then |
 | `epoch` | how many times it's been claimed |
 | `claim` | who holds it, and until when. Never the claim's token |
 | `blocked` | `{ kind, reason }` while it's held for a person |
@@ -771,10 +774,11 @@ the thread key:
 | `message.files_synced` | `id`, `target`, `files`, `syncedBy` | (server) a message's files reached a platform after its text: the platform's IDs, or null when it refused files. Only the sync whose copy it is sets them |
 | `message.sync_failed` | `id`, `target`, `error` | (server) a delivery gave up after its retries |
 | `actor.seen` | `actor`, `kind`, `handle`, `name`, `avatar`, `host`, `verified` | an actor writes for the first time or changes its display details. `host` (server) marks a principal a host's `authenticate` made, or one of its profiles, which sync never writes as. `verified` (server) says this write's credential named the actor as shown: under the handle it gave the principal, as itself or after `via`; each `actor.seen` says it anew, and its absence clears it |
-| `task.created` | `id`, `needs`, `for`, `by` | the thread rooted at `id` becomes a task, owned by `by.principal`. It waits while it has `needs` |
+| `task.created` | `id`, `needs`, `for`, `notBefore?`, `by` | the thread rooted at `id` becomes a task, owned by `by.principal`. It waits while it has `needs` or a `notBefore` |
 | `task.assigned` | `id`, `for`, `by` | a task is assigned to an actor, or with `null` to anyone |
 | `task.needs_changed` | `id`, `needs`, `by` | what a task waits for changes. It waits while it has `needs`, until `task.ready`, and with none it's ready |
-| `task.ready` | `id` | (server) every task it needs has completed |
+| `task.not_before_changed` | `id`, `notBefore`, `by` | the time before which a task isn't ready changes. It waits while it has one, until `task.ready`, and with neither that nor `needs` it's ready |
+| `task.ready` | `id` | (server) every task it needs has completed, and its not-before time has come |
 | `task.claimed` | `id`, `epoch`, `until`, `by` | (server) `by` holds it until `until`. The log keeps the hash of the claim's token, which no view shows |
 | `task.renewed` | `id`, `epoch`, `until`, `by` | a claim's lease is extended |
 | `task.released` | `id`, `epoch`, `by` | a claim gives the task back |

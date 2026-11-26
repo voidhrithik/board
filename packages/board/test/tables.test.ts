@@ -139,12 +139,17 @@ function history(seed: number, length: number): BoardEvent[] {
         }
         if (!task) {
           const needs = others.length && r.chance(0.3) ? [r.pick(others).id] : []
-          push('task.created', { ...about, needs, for: r.chance(0.2) ? r.pick(AUTHORS).actor : null, by: author })
-          tasks.set(root.id, { state: needs.length ? 'waiting' : 'ready', epoch: 0 })
+          // A time, with no draw of its own: the history stays the one its seed makes.
+          const timed = root.id % 3 === 0
+          push('task.created', { ...about, needs, for: r.chance(0.2) ? r.pick(AUTHORS).actor : null, ...(timed ? { notBefore: until } : {}), by: author })
+          tasks.set(root.id, { state: needs.length || timed ? 'waiting' : 'ready', epoch: 0 })
         } else if (task.state === 'waiting') {
           const kind = r.pick(['ready', 'ready', 'blocked', 'canceled', 'needs'] as const)
-          if (kind === 'ready') push('task.ready', about)
-          else if (kind === 'blocked') push('task.blocked', { ...about, kind: 'needs_input', reason: text(), by: author })
+          if (kind === 'ready') {
+            // Its time taken off first, every other time: one that needs others still waits until its task.ready.
+            if (events.length % 2) push('task.not_before_changed', { ...about, notBefore: null, by: author })
+            push('task.ready', about)
+          } else if (kind === 'blocked') push('task.blocked', { ...about, kind: 'needs_input', reason: text(), by: author })
           else if (kind === 'canceled') push('task.canceled', { ...about, reason: text(), by: author })
           task.state = kind === 'needs' ? rewire() : kind
         } else if (task.state === 'ready') {
@@ -152,7 +157,14 @@ function history(seed: number, length: number): BoardEvent[] {
           if (kind === 'claimed') push('task.claimed', { ...about, epoch: ++task.epoch, until, token: 'a'.repeat(64), by: author })
           else if (kind === 'blocked') push('task.blocked', { ...about, kind: null, reason: text(), by: author })
           else if (kind === 'canceled') push('task.canceled', { ...about, reason: text(), by: author })
-          else if (kind === 'assigned') push('task.assigned', { ...about, for: r.chance(0.5) ? r.pick(AUTHORS).actor : null, by: author })
+          else if (kind === 'assigned') {
+            push('task.assigned', { ...about, for: r.chance(0.5) ? r.pick(AUTHORS).actor : null, by: author })
+            // A time ahead, every other time, with no draw of its own: it waits for it.
+            if (events.length % 2 === 0) {
+              push('task.not_before_changed', { ...about, notBefore: until, by: author })
+              task.state = 'waiting'
+            }
+          }
           if (kind === 'needs') task.state = rewire()
           else if (kind !== 'assigned') task.state = kind
         } else if (task.state === 'claimed') {
@@ -359,8 +371,9 @@ function conformance(open: () => Promise<MessageTables>) {
 
   it('keep each task on its root as the full-state fold does, in every state a task has', async () => {
     const seen = new Set<string>()
+    const timed = new Set<string>()
     // Three histories that between them leave tasks in every state: one alone reaches five or six.
-    for (const seed of [2, 3, 13]) {
+    for (const seed of [2, 3, 5]) {
       const events = history(seed, 400)
       const tables = await applied(events)
       const { messages } = fold(events)
@@ -383,9 +396,13 @@ function conformance(open: () => Promise<MessageTables>) {
       // And some came to wait for other tasks than they were made with, or for none.
       const made = new Map(events.flatMap((event) => (event.type === 'task.created' ? [[event.payload.id, JSON.stringify(event.payload.needs)] as const] : [])))
       expect(tasks.filter((m) => made.get(m.id) !== JSON.stringify(m.task!.needs)).length, `history ${seed}`).toBeGreaterThanOrEqual(1)
+      // And some waited for a time, made with one or given one, and had it taken off.
+      if (tasks.some((m) => m.task!.notBefore)) timed.add('kept')
+      for (const event of events) if (event.type === 'task.not_before_changed') timed.add(event.payload.notBefore ? 'given' : 'taken off')
       await tables.close()
     }
     expect([...seen].sort()).toEqual(['blocked', 'canceled', 'claimed', 'completed', 'failed', 'ready', 'waiting'])
+    expect([...timed].sort()).toEqual(['given', 'kept', 'taken off'])
   })
 
   it('let a writer apply only the very next event, never ahead of a gap', async () => {

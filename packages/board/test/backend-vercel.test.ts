@@ -133,6 +133,7 @@ describe('vercel()', () => {
       'tasks: changes what a task needs: it waits for the new ones, is ready once they have completed, and at once with none': 'passed',
       'tasks: refuses a change of needs that would make a task wait for itself, straight back or through others': 'passed',
       'tasks: changes what a task needs only while no one holds it and it has not finished': 'passed',
+      'tasks: holds a task until its not-before time, readies it once its time has come and what it needs has completed, and lets its owner change it while no one holds it': 'passed',
       'tasks: makes several tasks in one write, in the order given: each waits for the ones it names, of the batch or there already, and an id makes them once': 'passed',
       'tasks: makes none of a batch when one of its tasks can not be made, wherever it comes in it': 'passed',
       'tasks: holds a task for a person, by its owner or its claim, and gives it back when unblocked': 'passed',

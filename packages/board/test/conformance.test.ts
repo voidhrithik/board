@@ -173,7 +173,7 @@ describe('the conformance kit', () => {
     // Every grant it made is gone, the ones that closed a pattern to everyone included.
     expect((await client.grants()).map((grant) => grant.id)).toEqual(['g1', 'g2', 'g3'])
     expect([...new Set(report.checks.map((check) => check.group))]).toEqual(['core', 'paging', 'search', 'schedules', 'tasks', 'grants', 'schemas', 'attachments', 'watchers', 'sync'])
-    expect(report.checks.filter((check) => check.group === 'tasks').map((check) => check.status)).toEqual(Array.from({ length: 24 }, () => 'passed'))
+    expect(report.checks.filter((check) => check.group === 'tasks').map((check) => check.status)).toEqual(Array.from({ length: 25 }, () => 'passed'))
     const { messages } = await client.channel('conformance').messages({ limit: 500 })
     expect(messages.filter((message) => !message.deleted)).toEqual([])
     // Every task it made went with its root: none is left open, and none still wears a state.
@@ -553,7 +553,7 @@ describe('the conformance kit', () => {
     const report = await conformance(await clientOf(taskless))
     expect(report.ok).toBe(true)
     const tasks = report.checks.filter((check) => check.group === 'tasks')
-    expect(tasks).toHaveLength(24)
+    expect(tasks).toHaveLength(25)
     // The one that needs no task route is about labels, which a board has either way.
     expect(tasks.filter((check) => check.status !== 'skipped').map((check) => check.name)).toEqual([])
     expect([...new Set(tasks.map((check) => check.detail))]).toEqual(['not kept here: this board keeps no tasks'])
@@ -585,6 +585,8 @@ describe('the conformance kit', () => {
       ],
       // Nothing was made to wait for another, so no change closes a cycle.
       ['refuses a change of needs that would make a task wait for itself, straight back or through others', 'a task that would need one that waits for it: expected 400 invalid_needs, and it succeeded'],
+      // A time that has passed is all it waits for, so it's ready with an open prerequisite.
+      ['holds a task until its not-before time, readies it once its time has come and what it needs has completed, and lets its owner change it while no one holds it', 'a task whose time has passed but that needs an open one: expected "waiting", got "ready"'],
       ['shows a feed that filters on board.task=ready a task becoming ready and being claimed, and never a token', 'the feed should show the task become ready, within a few seconds'],
     ])
     // One that ignores latest: it lists the first made, as without it.

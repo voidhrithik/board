@@ -1401,6 +1401,42 @@ const CHECKS: Check[] = [
   },
   {
     group: 'tasks',
+    name: 'holds a task until its not-before time, readies it once its time has come and what it needs has completed, and lets its owner change it while no one holds it',
+    run: async (ctx) => {
+      // Whole seconds, a day either side of now: what any board keeps of a time. Read once, so a time sent and the
+      // one it's checked against are the same, however long a write takes.
+      const second = Math.floor(Date.now() / 1000) * 1000
+      const day = (days: number) => new Date(second + days * 86_400_000).toISOString()
+      const [yesterday, tomorrow, later] = [day(-1), day(1), day(2)]
+      const { task: root } = await task(ctx, 'conformance: a task that may start tomorrow', { notBefore: tomorrow })
+      same(root.task?.notBefore, tomorrow, "a new task's not-before time")
+      same(root.task?.state, 'waiting', 'a task whose not-before time is ahead')
+      await rejects(ctx.board.tasks.claim(root.id, { lease: 60 }), 409, 'task_waiting', 'claiming a task before its not-before time')
+      const { task: begun } = await task(ctx, 'conformance: a task that could start yesterday', { notBefore: yesterday })
+      same(begun.task?.state, 'ready', 'a task whose not-before time has passed')
+      const { task: plain } = await task(ctx, 'conformance: a task with no not-before time')
+      same(plain.task?.notBefore, null, 'the not-before time of a task made without one')
+      // With what it needs too, it's ready once both hold, whichever is last.
+      const { task: both } = await task(ctx, 'conformance: a task that needs one and could start yesterday', { needs: [plain.id], notBefore: yesterday })
+      same(both.task?.state, 'waiting', 'a task whose time has passed but that needs an open one')
+      await (await ctx.board.tasks.claim(plain.id, { lease: 60 })).complete()
+      same((await ctx.board.thread(both.id)).message.task?.state, 'ready', 'the task, once what it needs completed')
+      // Its owner changes it: to a time ahead it waits, to one passed or none it's ready, in the change's own write.
+      same((await ctx.board.tasks.notBefore(begun.id, later)).task?.state, 'waiting', 'a task whose not-before time moved ahead')
+      const passed = await ctx.board.tasks.notBefore(root.id, yesterday)
+      same(passed.task?.notBefore, yesterday, 'the not-before time, changed')
+      same(passed.task?.state, 'ready', 'a task whose not-before time moved to one passed')
+      same((await ctx.board.tasks.notBefore(begun.id, null)).task?.state, 'ready', 'a task whose not-before time was taken off')
+      // Not while someone holds it, and a finished task's stays as it was.
+      const claim = await ctx.board.tasks.claim(root.id, { lease: 60 })
+      await rejects(ctx.board.tasks.notBefore(root.id, later), 409, 'task_claimed', "changing a claimed task's not-before time")
+      await claim.complete()
+      await rejects(ctx.board.tasks.notBefore(root.id, null), 409, 'task_finished', "changing a completed task's not-before time")
+      same((await ctx.board.thread(root.id)).message.task?.notBefore, yesterday, "the completed task's not-before time, after the refused change")
+    },
+  },
+  {
+    group: 'tasks',
     name: 'makes several tasks in one write, in the order given: each waits for the ones it names, of the batch or there already, and an id makes them once',
     run: async (ctx) => {
       const { task: done } = await task(ctx, 'conformance: a prerequisite that has completed')

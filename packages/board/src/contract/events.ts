@@ -149,9 +149,11 @@ export const boardEvents = {
     }),
     /**
      * The thread rooted at `id` is a task, and `by.principal` owns it. It waits while it has `needs`,
-     * until `task.ready` says they've all completed; with none, it's ready.
+     * until `task.ready` says they've all completed; with none, it's ready. One with a `notBefore`
+     * waits too, until `task.ready` says that time has come as well. A task made before not-before
+     * dates has none.
      */
-    'task.created': z.object({ ...Task, needs: z.array(MessageId).max(TASK_NEEDS_MAX), for: ActorId.nullable(), by: Author }),
+    'task.created': z.object({ ...Task, needs: z.array(MessageId).max(TASK_NEEDS_MAX), for: ActorId.nullable(), notBefore: z.string().datetime().nullable().optional(), by: Author }),
     /** Only actor `for` claims it now, or with null, anyone who may. */
     'task.assigned': z.object({ ...Task, for: ActorId.nullable(), by: Author }),
     /**
@@ -160,7 +162,12 @@ export const boardEvents = {
      * that's held stays held.
      */
     'task.needs_changed': z.object({ ...Task, needs: z.array(MessageId).max(TASK_NEEDS_MAX), by: Author }),
-    /** (server) Every task it needs has completed. */
+    /**
+     * It's ready no sooner than `notBefore` now, or with null, at any time: it waits again while it
+     * has a time or a task it needs, until `task.ready` says both hold. One that's held stays held.
+     */
+    'task.not_before_changed': z.object({ ...Task, notBefore: z.string().datetime().nullable(), by: Author }),
+    /** (server) Every task it needs has completed, and its not-before time has come. */
     'task.ready': z.object(Task),
     /** (server) `by` holds it until `until`. `token` is the SHA-256 of the claim's secret, hex: no view shows it. */
     'task.claimed': z.object({ ...Task, epoch: Epoch, until: Until, token: z.string().regex(/^[0-9a-f]{64}$/), by: Author }),

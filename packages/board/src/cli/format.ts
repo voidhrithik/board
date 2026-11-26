@@ -34,6 +34,13 @@ export function authorName(message: Pick<MessageView, 'author' | 'by'>): string 
   return message.author ? shownName(message.author) : message.by.actor
 }
 
+/** A time as the CLI says one it was given: to the minute when that's all it has, as people write them. */
+export const shortTime = (iso: string): string => iso.replace(/:00\.000Z$/, 'Z')
+
+/** How long until a task that waits for a time may start, while that time is ahead: `starts in 2d`. */
+const startNote = (task: TaskView, now: number): string =>
+  task.state === 'waiting' && task.notBefore && Date.parse(task.notBefore) > now ? `starts in ${ago(new Date(now).toISOString(), Date.parse(task.notBefore))}` : ''
+
 export function ago(iso: string, now = Date.now()): string {
   const seconds = Math.max(0, Math.round((now - Date.parse(iso)) / 1000))
   if (seconds < 60) return `${seconds}s`
@@ -169,6 +176,8 @@ function taskState(message: MessageView, task: TaskView, names: Map<string, stri
   else if (task.state === 'failed' || task.state === 'canceled') parts.push(task.state, ...(task.reason ? [noteLine(task.reason)] : []))
   else parts.push(task.state)
   if (task.needs.length) parts.push(`needs ${task.needs.map((id) => `#${id}`).join(' ')}`)
+  const starts = startNote(task, now)
+  if (starts) parts.push(starts)
   if (task.for !== null) parts.push(`for ${profileOf(task.for)}`)
   if (task.owner !== message.by.principal) parts.push(`owner ${named(task.owner)}`)
   return parts.join(' · ')
@@ -181,14 +190,14 @@ export const claimLine = (task: MessageView, until: string, now = Date.now()): s
  * What a task's row says after its text: how it ended or what it's held for, in the `room` the row
  * has left, or its own labels, whole, and what it waits for.
  */
-function taskNote(message: MessageView, task: TaskView, room: number): string {
+function taskNote(message: MessageView, task: TaskView, room: number, now = Date.now()): string {
   if (task.state === 'completed' && task.result) return noteLine(task.result, room)
   if ((task.state === 'failed' || task.state === 'canceled') && task.reason) return noteLine(task.reason, room)
   if (task.state === 'blocked' && task.blocked) return noteLine(task.blocked.reason, room)
   // Its state has a column of its own, so the label that says it again is left out.
   const own = Object.entries(message.labels).filter(([key]) => !key.startsWith('board.')).map(([key, value]) => `${key}=${lineText(value)}`).join(' ')
   const needs = task.state === 'waiting' && task.needs.length ? `needs ${task.needs.map((id) => `#${id}`).join(' ')}` : ''
-  return [own, needs].filter(Boolean).join('  ')
+  return [own, needs, startNote(task, now)].filter(Boolean).join('  ')
 }
 
 /** The widest a task's state is (`completed`), and how wide its first line's column is at least and at most. */
@@ -203,10 +212,10 @@ const TASK_NOTE_MIN = 20
  * column is as wide as any state, and the text's at least 30, so one list lines up with the next.
  * What a person wrote about how it ended is cut to fit 80 columns: the rest is in its thread.
  */
-export function formatTasks(tasks: ThreadSummaryView[]): string {
+export function formatTasks(tasks: ThreadSummaryView[], now = Date.now()): string {
   const rows = tasks.map(({ message }) => [`#${message.id}`, (message.task?.state ?? '').padEnd(STATE_WIDTH), firstLine(message, TASK_TEXT_MAX).padEnd(TASK_TEXT_MIN)])
   const room = Math.max(TASK_NOTE_MIN, 80 - rows.reduce((widest, row) => Math.max(widest, row.join('  ').length), 0) - 2)
-  return table(rows.map((row, at) => [...row, tasks[at]!.message.task ? taskNote(tasks[at]!.message, tasks[at]!.message.task!, room) : '']))
+  return table(rows.map((row, at) => [...row, tasks[at]!.message.task ? taskNote(tasks[at]!.message, tasks[at]!.message.task!, room, now) : '']))
 }
 
 /** Threads in order, each root followed by its replies. */
@@ -425,6 +434,7 @@ export function formatEvent(event: BoardEventView): string {
     case 'task.created':
     case 'task.assigned':
     case 'task.needs_changed':
+    case 'task.not_before_changed':
     case 'task.ready':
     case 'task.claimed':
     case 'task.renewed':
@@ -448,12 +458,15 @@ function taskEvent(event: Extract<BoardEventView, { type: `task.${string}` }>): 
   const more = (...parts: (string | null | undefined)[]) => parts.filter((part): part is string => !!part).map((part) => ` · ${part}`).join('')
   switch (event.type) {
     case 'task.created':
-      return `created${by}${more(event.payload.needs.length ? `needs ${event.payload.needs.map((id) => `#${id}`).join(' ')}` : null, event.payload.for !== null ? `for ${profileOf(event.payload.for)}` : null)}`
+      return `created${by}${more(event.payload.needs.length ? `needs ${event.payload.needs.map((id) => `#${id}`).join(' ')}` : null, event.payload.for !== null ? `for ${profileOf(event.payload.for)}` : null, event.payload.notBefore ? `waits until ${shortTime(event.payload.notBefore)}` : null)}`
     case 'task.assigned':
       return event.payload.for !== null ? `assigned to ${profileOf(event.payload.for)}${by}` : `unassigned${by}`
     case 'task.needs_changed':
       // What it waits for now, in place of what it waited for.
       return `needs ${event.payload.needs.length ? event.payload.needs.map((id) => `#${id}`).join(' ') : 'nothing'}${by}`
+    case 'task.not_before_changed':
+      // When it may start now, or that it waits for no time.
+      return `${event.payload.notBefore ? `waits until ${shortTime(event.payload.notBefore)}` : 'waits for no time'}${by}`
     case 'task.ready':
       return 'ready'
     case 'task.expired':

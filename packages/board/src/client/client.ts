@@ -169,12 +169,14 @@ const scheduleBody = (input: ScheduleOptions) => {
 
 /**
  * What makes a thread a task: the tasks it waits for (`needs`, by their IDs), the one actor of
- * yours that claims it (`for`, `<your principal>+<profile>`), and `claim`, which claims it in the
- * same write, for `lease` seconds, with `token` as its token when you bring one.
+ * yours that claims it (`for`, `<your principal>+<profile>`), the time before which it isn't ready
+ * (`notBefore`, an ISO time), and `claim`, which claims it in the same write, for `lease` seconds,
+ * with `token` as its token when you bring one.
  */
 export type TaskOptions = {
   needs?: string[]
   for?: string | null
+  notBefore?: string | null
   claim?: boolean
   lease?: number
   token?: string
@@ -186,13 +188,15 @@ export type NewTaskOptions = TaskOptions & Pick<PostOptions, 'text' | 'labels' |
 /**
  * One task of several made together: its root's text, labels, `noSync`, and `attachments`, as a
  * post takes them. `key` is a name for it among the others, and `needs` takes a task's ID, or
- * `{ key }` for one made with it, before or after it. `for` is the one actor of yours that claims it.
+ * `{ key }` for one made with it, before or after it. `for` is the one actor of yours that claims it,
+ * and `notBefore` the time before which it isn't ready.
  */
 export type TaskInBatch = Required<Pick<PostOptions, 'text'>> &
   Pick<PostOptions, 'labels' | 'noSync' | 'attachments'> & {
     key?: string
     needs?: (string | { key: string })[]
     for?: string | null
+    notBefore?: string | null
   }
 
 /**
@@ -723,6 +727,12 @@ export function createBoardClient(options: ClientOptions) {
        * itself, through however many tasks, throws a 400 `invalid_needs`.
        */
       needs: (id: string, needs: string[]) => taskWrite(id, 'needs', { needs }),
+      /**
+       * Sets the time before which a task isn't ready, an ISO time, or with null, none. It waits until then, and is
+       * ready once its time has come and what it needs has completed. For its owner, while no one holds it and it
+       * isn't finished.
+       */
+      notBefore: (id: string, notBefore: string | null) => taskWrite(id, 'not-before', { notBefore }),
       /** Cancels a task that hasn't completed, ending any claim. What waits for it keeps waiting. */
       cancel: (id: string, reason: string) => taskWrite(id, 'cancel', { reason }),
     },

@@ -638,7 +638,7 @@ function build(options: A2Options, binding: BoardBinding) {
       taskLimits.lease(body.lease)
       const identity = await identityOf(caller)
       const { principal } = identity
-      const about = { needs: body.needs, for: body.for, claim: body.claim, lease: body.lease, token: body.token }
+      const about = { needs: body.needs, for: body.for, notBefore: body.notBefore, claim: body.claim, lease: body.lease, token: body.token }
       if (body.re !== undefined) return tasks.adopt(identity, messageAt(body.re), about)
       // A new thread, posted as any is: `post` where it lands, and `label` for the labels it carries.
       const proofs = await authorizePost(writes, principal.access, { channel: body.channel, labels: body.labels })
@@ -648,7 +648,7 @@ function build(options: A2Options, binding: BoardBinding) {
       const task = await writePost(writes, { attachments, identity, proofs, channel: body.channel, text: body.text ?? '', labels: body.labels, noSync: body.noSync, id: body.id, with: made.along })
       // A retry gets back the post that landed with its ID: one that was no task's is another write's.
       if (!task.task) throw duplicateId()
-      const claim = await made.claimed(messageAt(task.id))
+      const claim = await made.landed(messageAt(task.id))
       return { task, ...(claim ? { claim } : {}) }
     },
     async createTasks(caller, body) {
@@ -674,7 +674,10 @@ function build(options: A2Options, binding: BoardBinding) {
       const { id } = body
       const asked = id !== undefined ? await batchAsked(id, body.request ?? '') : undefined
       const again = id !== undefined && asked !== undefined ? { asked, landed: () => landedBatch(writes, identity, (at) => batchRoot(id, at), asked) } : undefined
-      return { tasks: await writeRoots(writes, { identity, proofs, channel: body.channel, roots, with: made, again }) }
+      const written = await writeRoots(writes, { identity, proofs, channel: body.channel, roots, with: made, again })
+      // Each one that waits for its time gets a timer for it, once it's there.
+      for (const root of written) await tasks.wakes(messageAt(root.id), root.task?.notBefore || null)
+      return { tasks: written }
     },
     async createdTasks(caller, { id, request }) {
       const identity = await identityOf(caller)
@@ -718,6 +721,7 @@ function build(options: A2Options, binding: BoardBinding) {
       taskLimits.needs(needs)
       return tasks.needs(await identityOf(caller), messageAt(id), needs)
     },
+    setTaskNotBefore: async (caller, { id, notBefore }) => tasks.notBefore(await identityOf(caller), messageAt(id), notBefore),
     async cancelTask(caller, { id, reason }) {
       taskLimits.note('reason', reason)
       return tasks.cancel(await identityOf(caller), messageAt(id), reason)

@@ -122,6 +122,8 @@ export function taskView(task: Task): TaskView {
     needs: needs.map(ref),
     claim: claim && { actor: claim.actor, until: claim.until },
     blocked: task.blocked && { ...task.blocked },
+    // A task the tables kept before not-before dates has no key for one.
+    notBefore: task.notBefore || null,
   }
 }
 

@@ -35,7 +35,12 @@ export type Task = {
   result: string | null
   /** Why it failed or was canceled. */
   reason: string | null
+  /** The time before which it isn't ready, ISO: it waits until `task.ready` says it has come. */
+  notBefore: string | null
 }
+
+/** Whether a task waits for something now, as the fold can tell: a task it needs, or a time. `task.ready` ends it. */
+const waits = (task: Task) => task.needs.length > 0 || Boolean(task.notBefore)
 
 export type Message = {
   id: number
@@ -208,11 +213,13 @@ function foldMessage(state: MessagesState, event: BoardEvent): Message | undefin
       // A thread becomes a task once, at its root, while the root is there.
       if (!message || message.deleted || message.re !== null || message.task) return undefined
       const { needs, by } = event.payload
-      message.task = { state: needs.length > 0 ? 'waiting' : 'ready', owner: by.principal, by: by.actor, for: event.payload.for, needs: [...needs], epoch: 0, claim: null, blocked: null, result: null, reason: null }
+      const notBefore = event.payload.notBefore || null
+      message.task = { state: needs.length > 0 || notBefore ? 'waiting' : 'ready', owner: by.principal, by: by.actor, for: event.payload.for, needs: [...needs], epoch: 0, claim: null, blocked: null, result: null, reason: null, notBefore }
       return labeled(message)
     }
     case 'task.assigned':
     case 'task.needs_changed':
+    case 'task.not_before_changed':
     case 'task.ready':
     case 'task.claimed':
     case 'task.renewed':
@@ -260,7 +267,14 @@ function foldTask(task: Task, event: Exclude<TaskEvent, { type: 'task.created' }
       // any task: `task.ready` follows at once when they've all completed. One held for a person stays held.
       if (task.state !== 'waiting' && task.state !== 'ready' && task.state !== 'blocked') return false
       task.needs = [...event.payload.needs]
-      if (task.state !== 'blocked') task.state = task.needs.length > 0 ? 'waiting' : 'ready'
+      if (task.state !== 'blocked') task.state = waits(task) ? 'waiting' : 'ready'
+      return true
+    case 'task.not_before_changed':
+      // It changes as what it needs does: while no one holds it and it isn't finished. It waits again while it has a
+      // time or a task to wait for, and `task.ready` follows once both hold. One held for a person stays held.
+      if (task.state !== 'waiting' && task.state !== 'ready' && task.state !== 'blocked') return false
+      task.notBefore = event.payload.notBefore
+      if (task.state !== 'blocked') task.state = waits(task) ? 'waiting' : 'ready'
       return true
     case 'task.ready':
       if (task.state !== 'waiting') return false
@@ -304,8 +318,8 @@ function foldTask(task: Task, event: Exclude<TaskEvent, { type: 'task.created' }
       return true
     case 'task.unblocked':
       if (task.state !== 'blocked') return false
-      // Back to waiting when it waits for any task: `task.ready` follows at once when they've all completed.
-      task.state = task.needs.length > 0 ? 'waiting' : 'ready'
+      // Back to waiting when it waits for any task or a time: `task.ready` follows at once when both hold.
+      task.state = waits(task) ? 'waiting' : 'ready'
       task.blocked = null
       return true
     case 'task.canceled':

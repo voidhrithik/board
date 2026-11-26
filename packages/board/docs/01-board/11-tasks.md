@@ -90,7 +90,7 @@ $ vb read 812
 
 | State | Means |
 | --- | --- |
-| `waiting` | a task it needs hasn't completed |
+| `waiting` | a task it needs hasn't completed, or its not-before time hasn't come |
 | `ready` | it can be claimed |
 | `claimed` | an agent holds it until its lease ends |
 | `blocked` | held for a person |
@@ -210,6 +210,30 @@ $ vb tasks needs 814 --none
 814 needs nothing
 ```
 
+## Not before a time
+
+```text
+$ vb tasks create work "rotate the deploy keys" --not-before 2026-11-30T09:00Z
+816
+$ vb tasks work
+#816  waiting    rotate the deploy keys          starts in 3d
+$ vb tasks not-before 816 2026-12-01T09:00Z
+816 waits until 2026-12-01T09:00Z
+$ vb tasks not-before 816 --none
+816 waits for no time
+```
+
+- **`--not-before <time>` makes a task wait until then,** on `create` or as a
+  plan's `notBefore`. The board keeps it in UTC.
+- **It's ready once its time has come and what it needs has completed,**
+  whichever is last, with one `task.ready`.
+- **A claim checks the clock.** A task whose time has come is claimable at
+  once, by ID or with `--ready`, whether or not the board has said so yet.
+- **A row and `read` say when it may start:** `starts in 3d`, while it waits.
+- **Its owner changes it** with `vb tasks not-before <id> <time>`, or takes it
+  off with `--none`, while no one holds the task and it isn't finished. A time
+  that has passed readies it in the same write.
+
 ## A plan of tasks
 
 ```json plan.json
@@ -231,7 +255,7 @@ vb tasks create work --file plan.json --idempotency-key cve-123
 ```
 
 - **A plan is a JSON array of tasks,** from a file, or from stdin for `-`.
-  Each is `{ key?, text, labels?, needs?, for?, noSync?, attachments? }`. Any
+  Each is `{ key?, text, labels?, needs?, for?, notBefore?, noSync?, attachments? }`. Any
   other key is refused before a task is made, so a `need` for `needs` can't
   make a task that waits for nothing.
 - **A task's `key` names it for the others of the plan.** `needs` takes
@@ -293,8 +317,8 @@ $ vb tasks assign 832 --pool
 unassigned 832
 ```
 
-- **Its owner made it a task.** `block`, `unblock`, `reopen`, `assign`, and
-  `cancel` are for its owner, or anyone with `manage` in its channel. Anyone
+- **Its owner made it a task.** `block`, `unblock`, `reopen`, `assign`,
+  `not-before`, and `cancel` are for its owner, or anyone with `manage` in its channel. Anyone
   else fails with `task_not_owned`.
 - **A profile owns only the tasks it made.** `vb --as fixer` changes what
   `fixer` made a task, and not what you or `--as triage` did. As yourself,
@@ -355,9 +379,9 @@ await team.tasks.held(id, { epoch: message.task!.epoch, token }).complete('fixed
 ## How it runs
 
 - **The board that keeps the log keeps the tasks.** [`local()`](./10-local.md)
-  and `vb serve` keep them, with a timer in the process for each lease. A
-  lease that runs out makes its task claimable at once, whether or not the
-  timer has fired.
+  and `vb serve` keep them, with a timer in the process for each lease and
+  each not-before time. A lease that runs out, or a time that comes, makes its
+  task claimable at once, whether or not the timer has fired.
 - **Vercel's board keeps them on its threads.** A claim there gets 5 minutes
   at most, and `--ready` looks in 200 places at most, its channels times the
   owners it takes from: past that it fails with `claim_too_wide`, and `vb`

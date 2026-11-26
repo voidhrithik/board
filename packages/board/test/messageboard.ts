@@ -87,6 +87,8 @@ type Task = {
   blocked: { kind: string | null; reason: string } | null
   result: string | null
   reason: string | null
+  /** The time before which it isn't ready, in milliseconds, or null for none. */
+  notBefore: number | null
   /** Who completed it, and when: a dependent readied later is readied in their name. No answer shows it. */
   completed?: { by: Actor; at: number }
   /** It completed with tasks waiting for it that haven't all been readied: whoever sees it goes on. No answer shows it. */
@@ -805,7 +807,7 @@ function fakeBoard(shared: Shared, boardId: string) {
   const batchDigest = (body: Record<string, any>) =>
     JSON.stringify([
       body.channelId !== undefined ? { id: body.channelId } : { name: body.channel },
-      (body.tasks as Record<string, any>[]).map((task) => [task.key ?? null, task.text, Object.entries(task.labels ?? {}).sort(([a], [b]) => (a < b ? -1 : 1)), task.noSync ?? false, task.attachments ?? [], task.needs ?? [], task.for ?? null]),
+      (body.tasks as Record<string, any>[]).map((task) => [task.key ?? null, task.text, Object.entries(task.labels ?? {}).sort(([a], [b]) => (a < b ? -1 : 1)), task.noSync ?? false, task.attachments ?? [], task.needs ?? [], task.for ?? null, task.notBefore || null]),
     ])
   /** A profile's name, as an actor ID ends with one. */
   const PROFILE_PART = /^[a-z0-9][a-z0-9-]{0,31}$/
@@ -880,7 +882,16 @@ function fakeBoard(shared: Shared, boardId: string) {
     if (typeof value !== 'string' || !CLAIM_TOKEN.test(value)) throw bad('claimToken is 32 random bytes in base64url.')
     return value
   }
-  const done = (task: Task) => task.needs.every((id) => threads.get(id)?.task?.state === 'completed')
+  /** Whether a waiting task may be readied: its time has come, and every task it needs has completed. */
+  const done = (task: Task) => (!task.notBefore || task.notBefore <= now()) && task.needs.every((id) => threads.get(id)?.task?.state === 'completed')
+  /** Whether a task that isn't held waits before it's ready: for tasks, or for a time, which has come or not. */
+  const waits = (task: Pick<Task, 'needs' | 'notBefore'>) => task.needs.length > 0 || Boolean(task.notBefore)
+  /** The time before which a task isn't ready, as a body says it: milliseconds, or null or nothing for none. */
+  function checkedNotBefore(notBefore: unknown): number | null {
+    if (!notBefore) return null
+    if (!Number.isInteger(notBefore) || (notBefore as number) < 0) throw bad('notBefore is a time in milliseconds, or null.')
+    return notBefore as number
+  }
 
   /** One task change, as an event about the thread's root: its labels' change when its state did, and the task after it. */
   function taskEvent(thread: Thread, type: string, actor: Actor, from: TaskState | undefined, operationId: unknown) {
@@ -978,17 +989,18 @@ function fakeBoard(shared: Shared, boardId: string) {
     const needs = checkedNeeds(actor, spec.needs ?? [], self)
     const assigned: unknown = spec.for ?? null
     if (assigned !== null && !profileOf(owner, assigned)) throw new Refused(400, 'invalid_for', "A task is assigned to one of its owner's profiles.")
-    const waits = needs.some((id) => threads.get(id)!.task!.state !== 'completed')
+    const notBefore = checkedNotBefore(spec.notBefore)
+    const early = needs.some((id) => threads.get(id)!.task!.state !== 'completed') || (!!notBefore && notBefore > now())
     let claim: { hash: string; lease: number } | null = null
     if (spec.claim !== undefined) {
       if (typeof spec.claim !== 'object' || spec.claim === null) throw bad('claim is { claimToken, leaseSeconds? }.')
       claim = { hash: hashOf(tokenOf(spec.claim.claimToken)), lease: leaseMs(spec.claim.leaseSeconds) }
       if (!mayIn(actor, 'label', channel)) throw new Refused(403, 'forbidden', 'You may not label there.')
       // A task that can't be claimed as it would start isn't made.
-      if (waits) throw new Refused(409, 'task_waiting', 'The task would wait for others.')
+      if (early) throw new Refused(409, 'task_waiting', 'The task would wait for others, or a time.')
       if (assigned !== null && assigned !== actor.id) throw new Refused(409, 'task_assigned', 'The task would be assigned to another actor.')
     }
-    return { owner, needs, for: assigned as string | null, waits, claim }
+    return { owner, needs, for: assigned as string | null, notBefore, waits: early, claim }
   }
   function hold(thread: Thread, actor: Actor, claim: { hash: string; lease: number }, operationId: unknown) {
     const task = thread.task!
@@ -1009,9 +1021,10 @@ function fakeBoard(shared: Shared, boardId: string) {
     return thread.task?.state === 'claimed' && claim !== null && claim !== undefined && claim.until > now() && typeof token === 'string' && claim.hash === hashOf(token)
   }
   function makeTask(thread: Thread, actor: Actor, checked: ReturnType<typeof checkedTask>, operationId: unknown) {
-    // One that needs others waits as it's made, always: when they have all completed already, its `task.ready` follows
-    // in the same write, before its claim. One that needs none is ready as it's made, with no `task.ready`.
-    thread.task = { state: checked.needs.length > 0 ? 'waiting' : 'ready', owner: checked.owner, by: actor.id, for: checked.for, needs: checked.needs, epoch: 0, claim: null, blocked: null, result: null, reason: null }
+    // One that needs others, or has a time, waits as it's made, always: when they have all completed already and the
+    // time has come, its `task.ready` follows in the same write, before its claim. One with neither is ready as it's
+    // made, with no `task.ready`.
+    thread.task = { state: waits(checked) ? 'waiting' : 'ready', owner: checked.owner, by: actor.id, for: checked.for, needs: checked.needs, epoch: 0, claim: null, blocked: null, result: null, reason: null, notBefore: checked.notBefore }
     taskEvent(thread, 'task.made', actor, undefined, operationId)
     ready(thread, actor, operationId)
     if (checked.claim) hold(thread, actor, checked.claim, operationId)
@@ -1040,7 +1053,7 @@ function fakeBoard(shared: Shared, boardId: string) {
    * claimed in the body's order.
    */
   function makeBatch(actor: Actor, body: Record<string, any>): { made: Thread[] } | { repeat: { channelId: string; threads: string[] } } {
-    type Asked = { key?: string; text: string; labels?: Record<string, string>; noSync?: boolean; attachments?: string[]; needs?: (string | { key: string })[]; for?: string | null }
+    type Asked = { key?: string; text: string; labels?: Record<string, string>; noSync?: boolean; attachments?: string[]; needs?: (string | { key: string })[]; for?: string | null; notBefore?: number | null }
     const aKey = (value: unknown): value is string => typeof value === 'string' && value.length >= 1 && value.length <= 64
     // The body's shape.
     if (!Array.isArray(body.tasks) || body.tasks.length < 1 || body.tasks.length > 100) throw bad('tasks is 1 to 100 tasks.')
@@ -1055,6 +1068,7 @@ function fakeBoard(shared: Shared, boardId: string) {
       if (named.length > 20 || named.includes(null) || new Set(named).size !== named.length) throw bad('needs is at most 20 task IDs or keys, each named once.')
       const files: unknown[] = task.attachments ?? []
       if (!Array.isArray(files) || files.length > 10 || new Set(files).size !== files.length) throw bad('A message carries up to 10 different attachments.')
+      checkedNotBefore(task.notBefore)
     }
     const tasks = body.tasks as Asked[]
     // What the caller may: post there, and label when a task has labels.
@@ -1135,7 +1149,7 @@ function fakeBoard(shared: Shared, boardId: string) {
       const message = post(actor, thread, { text: task.text, ...(task.labels ? { labels: task.labels } : {}), ...(task.attachments?.length ? { attachments: task.attachments } : {}), ...(task.noSync ? { noSync: true } : {}) })
       message.createdAt = thread.lastActivityAt = first + at
       thread.lastMessage = { ...thread.lastMessage!, createdAt: first + at }
-      makeTask(thread, actor, { owner, needs: [...there[at]!, ...inside[at]!.map((other) => made[other]!.id)], for: task.for ?? null, waits: false, claim: null }, body.operationId)
+      makeTask(thread, actor, { owner, needs: [...there[at]!, ...inside[at]!.map((other) => made[other]!.id)], for: task.for ?? null, notBefore: task.notBefore || null, waits: false, claim: null }, body.operationId)
     }
     if (named !== null) keyed.set(named, { digest, channelId: channel.id, threads: made.map((thread) => thread.id) })
     return { made }
@@ -1201,6 +1215,8 @@ function fakeBoard(shared: Shared, boardId: string) {
       return [...owners.map((owner) => tasks.filter((t) => t.task!.for === null && t.task!.owner === owner)), ...(actor.profile ? [tasks.filter((t) => assignedTo(t.task!, actor))] : [])]
     })
     const lapsed = (t: Thread) => t.task!.state === 'claimed' && t.task!.claim!.until <= now()
+    // A task that waited for a time that has come, with all it needs completed: no event says so, so it's read here.
+    const begun = (t: Thread) => t.task!.state === 'waiting' && !!t.task!.notBefore && done(t.task!)
     const longestLapsed = (a: Thread, b: Thread) => a.task!.claim!.until - b.task!.claim!.until
     /** What's assigned to the caller's actor first, then in `order`. */
     const assignedFirst = (order: (a: Thread, b: Thread) => number) => (a: Thread, b: Thread) => Number(assignedTo(b.task!, actor)) - Number(assignedTo(a.task!, actor)) || order(a, b)
@@ -1208,7 +1224,7 @@ function fakeBoard(shared: Shared, boardId: string) {
       share.looks++
       // From each place, its oldest ready tasks and its claims whose lease ran out longest ago, a few of each, and of
       // all those a bounded number, the assigned ones first. Each is the caller's to take, so only `labels` narrow them.
-      const ready = places.flatMap((tasks) => tasks.filter((t) => t.task!.state === 'ready').sort(oldestFirst).slice(0, PLACE_READS)).sort(assignedFirst(oldestFirst)).slice(0, READY_IN_ALL)
+      const ready = places.flatMap((tasks) => tasks.filter((t) => t.task!.state === 'ready' || begun(t)).sort(oldestFirst).slice(0, PLACE_READS)).sort(assignedFirst(oldestFirst)).slice(0, READY_IN_ALL)
       const over = places.flatMap((tasks) => tasks.filter(lapsed).sort(longestLapsed).slice(0, PLACE_READS)).sort(assignedFirst(longestLapsed)).slice(0, LAPSED_IN_ALL)
       const mine = [...ready, ...over].filter((t) => wanted.every(([key, value]) => rootLabels(t)[key] === value)).sort(assignedFirst(oldestFirst))
       return { found: mine[0] ?? null, over }
@@ -1219,7 +1235,7 @@ function fakeBoard(shared: Shared, boardId: string) {
     if (!found && first) {
       // Nothing to take: once a request, it goes on with the completions on the board that haven't readied everything
       // that waited for them, the oldest few, wherever they and what waited are, and looks again when that readied
-      // any. It looks through no waiting task itself.
+      // any. It looks through no waiting task itself but one whose time has come.
       const before = share.goneOver
       const marked = [...threads.values()].filter((t) => t.task?.marked).sort((a, b) => a.task!.completed!.at - b.task!.completed!.at).slice(0, MARKED_SEEN)
       for (const completed of marked) share.goneOver = goOn(completed, share.goneOver, undefined)
@@ -1230,6 +1246,7 @@ function fakeBoard(shared: Shared, boardId: string) {
     for (const thread of over) if (thread !== found && share.expiries > 0 && expire(thread)) share.expiries--
     if (found) {
       expire(found)
+      ready(found, actor, body.operationId)
       hold(found, actor, claim, body.operationId)
     }
     return found
@@ -1385,7 +1402,7 @@ function fakeBoard(shared: Shared, boardId: string) {
       shared.receipt(actor, body.operationId)
       return { tasks: answered.tasks }
     }
-    const worked = /^\/tasks\/([^/]+)\/(claim|renew|release|complete|fail|block|unblock|reopen|assign|needs|cancel)$/.exec(rest)
+    const worked = /^\/tasks\/([^/]+)\/(claim|renew|release|complete|fail|block|unblock|reopen|assign|needs|not-before|cancel)$/.exec(rest)
     if (method !== 'POST' || !worked) return undefined
     const verb = worked[2]!
     let wrote = false
@@ -1405,7 +1422,7 @@ function fakeBoard(shared: Shared, boardId: string) {
         const claim = { hash: hashOf(tokenOf(body.claimToken)), lease: leaseMs(body.leaseSeconds) }
         need(actor, 'label', thread.channelId)
         const lapsed = task.state === 'claimed' && task.claim!.until <= now()
-        if (task.state === 'waiting' && !done(task)) throw new Refused(409, 'task_waiting', 'The task waits for others.')
+        if (task.state === 'waiting' && !done(task)) throw new Refused(409, 'task_waiting', 'The task waits for others, or a time.')
         if (task.state === 'blocked') throw new Refused(409, 'task_blocked', 'The task is held for a person.')
         if (finishedFor(task) || task.state === 'failed') throw finishedTask(task)
         if (task.for !== null && !assignedTo(task, actor)) throw new Refused(409, 'task_assigned', 'The task is assigned to another actor.')
@@ -1459,9 +1476,9 @@ function fakeBoard(shared: Shared, boardId: string) {
         if (finishedFor(task) || task.state === 'failed') throw finishedTask(task)
         lapse()
         if (task.state === 'blocked') {
-          // One that needs others waits again, always: when they have all completed, its `task.ready` follows in the same
-          // write. One that needs none is ready in the unblock itself.
-          Object.assign(task, { state: task.needs.length > 0 ? 'waiting' : 'ready', blocked: null })
+          // One that needs others, or has a time, waits again, always: when they have all completed and the time has
+          // come, its `task.ready` follows in the same write. One with neither is ready in the unblock itself.
+          Object.assign(task, { state: waits(task) ? 'waiting' : 'ready', blocked: null })
           taskEvent(thread, 'task.unblocked', actor, from, op)
           ready(thread, actor, op)
         }
@@ -1485,6 +1502,21 @@ function fakeBoard(shared: Shared, boardId: string) {
           task.for = to
           taskEvent(thread, 'task.assigned', actor, from, op)
         }
+      } else if (verb === 'not-before') {
+        ownerOrManage(actor, thread)
+        const notBefore = checkedNotBefore(body.notBefore)
+        // As what it needs: not while someone holds it, and a finished task's stays as it was.
+        if (finishedFor(task) || task.state === 'failed') throw finishedTask(task)
+        if (task.state === 'claimed' && task.claim!.until > now()) throw new Refused(409, 'task_claimed', 'Someone holds the task: when it may start changes once no one does.', undefined, task.claim!.until)
+        if (task.notBefore !== notBefore) {
+          lapse()
+          // It waits from this write, and its `task.ready` follows in it when its time has come and what it needs has
+          // completed: one held for a person stays held.
+          task.notBefore = notBefore
+          if (task.state !== 'blocked') task.state = waits(task) ? 'waiting' : 'ready'
+          taskEvent(thread, 'task.not_before_changed', actor, from, op)
+          ready(thread, actor, op)
+        }
       } else if (verb === 'needs') {
         ownerOrManage(actor, thread)
         if (finishedFor(task) || task.state === 'failed') throw finishedTask(task)
@@ -1503,7 +1535,7 @@ function fakeBoard(shared: Shared, boardId: string) {
           // It waits for them from this write, and its `task.ready` follows in it when they have all completed: with
           // none it's ready, and one held for a person stays held.
           task.needs = needs
-          if (task.state !== 'blocked') task.state = needs.length > 0 ? 'waiting' : 'ready'
+          if (task.state !== 'blocked') task.state = waits(task) ? 'waiting' : 'ready'
           taskEvent(thread, 'task.needs_changed', actor, from, op)
           ready(thread, actor, op)
         }

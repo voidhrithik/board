@@ -16,6 +16,7 @@ import { fakeQueue } from './queue.ts'
 
 const SECOND = 1000
 const MINUTE = 60 * SECOND
+const HOUR = 60 * MINUTE
 const T0 = Date.parse('2026-10-07T12:00:00.000Z')
 const at = (ms: number) => new Date(T0 + ms).toISOString()
 
@@ -93,7 +94,7 @@ describe('a task', () => {
     expect(made.status).toBe(201)
     const root = made.body.task as MessageView
     expect(root).toMatchObject({ channel: 'work', text: 'fix CVE-123 in acme/web', re: null, by: { actor: ADA }, labels: { step: 'fix', 'board.task': 'ready' } })
-    expect(root.task).toEqual({ state: 'ready', owner: ADA, by: ADA, for: null, needs: [], epoch: 0, claim: null, blocked: null, result: null, reason: null })
+    expect(root.task).toEqual({ state: 'ready', owner: ADA, by: ADA, for: null, needs: [], epoch: 0, claim: null, blocked: null, result: null, reason: null, notBefore: null })
     expect(made.body.claim).toBeUndefined()
 
     // Anyone who reads the channel reads it, replies in it, and finds it by its state.
@@ -913,6 +914,147 @@ describe('what a task needs, changed', () => {
     const { cursor } = (await ada('GET', '/events')).body
     expect((await needs(ada, review.id, [fix.id])).body.task.task).toMatchObject({ state: 'waiting', needs: [fix.id], claim: null, epoch: 1 })
     expect((await events(ada, cursor)).map((event) => [event.type, event.message?.task?.state])).toEqual([['task.expired', 'ready'], ['task.needs_changed', 'waiting']])
+  })
+})
+
+describe('a not-before date', () => {
+  const notBefore = (call: Call, id: string, when: string | null) => call('POST', `/tasks/${id}/not-before`, { notBefore: when })
+  const ready = (call: Call) => call('POST', '/tasks/claim', { channel: 'work' })
+
+  it('keeps a task waiting until then, and readies it when the time comes, on the board\'s timer', async () => {
+    const { ada, advance } = setup()
+    // Any time with an offset, as the board says times: in UTC.
+    const later = await task(ada, 'rotate the deploy keys', { notBefore: '2026-10-07T15:00:00+02:00' })
+    expect(later.task).toMatchObject({ state: 'waiting', needs: [], notBefore: at(HOUR) })
+    expect(later.labels['board.task']).toBe('waiting')
+    expect(code(await ada('POST', `/tasks/${later.id}/claim`, {}))).toEqual([409, 'task_waiting'])
+    expect((await ready(ada)).body.task).toBeNull()
+    // One whose time has come is ready as it's made, and one with none is as ever.
+    expect((await task(ada, 'now', { notBefore: at(-MINUTE) })).task).toMatchObject({ state: 'ready', notBefore: at(-MINUTE) })
+    expect((await task(ada, 'whenever')).task!.notBefore).toBeNull()
+    expect(code(await ada('POST', '/tasks', { channel: 'work', text: 'when?', notBefore: 'soon' }))).toEqual([400, 'invalid_request'])
+    // A claim it was made with can't hold a task that waits: nothing is made.
+    expect(code(await ada('POST', '/tasks', { channel: 'work', text: 'early', notBefore: at(HOUR), claim: true }))).toEqual([409, 'task_waiting'])
+
+    const { cursor } = (await ada('GET', '/events')).body
+    await advance(HOUR - SECOND)
+    expect(await stateOf(ada, later.id)).toBe('waiting')
+    await advance(SECOND)
+    expect(await stateOf(ada, later.id)).toBe('ready')
+    expect((await events(ada, cursor)).filter((event) => event.message?.id === later.id).map((event) => event.type)).toEqual(['task.ready'])
+    expect((await claim(ada, later.id)).epoch).toBe(1)
+  })
+
+  it('is ready once its time has come and the tasks it needs have completed, whichever is last', async () => {
+    const { ada, advance } = setup()
+    const fix = await task(ada, 'fix it')
+    const review = await task(ada, 'review it', { needs: [fix.id], notBefore: at(HOUR) })
+    expect(review.task).toMatchObject({ state: 'waiting', needs: [fix.id], notBefore: at(HOUR) })
+    // What it needs completes first: it waits for its time.
+    await ada('POST', `/tasks/${fix.id}/complete`, await claim(ada, fix.id))
+    expect(await stateOf(ada, review.id)).toBe('waiting')
+    await advance(HOUR)
+    expect(await stateOf(ada, review.id)).toBe('ready')
+    // Its time comes first: it waits for what it needs.
+    const ship = await task(ada, 'ship it')
+    const announce = await task(ada, 'announce it', { needs: [ship.id], notBefore: at(2 * HOUR) })
+    await advance(HOUR)
+    expect(await stateOf(ada, announce.id)).toBe('waiting')
+    await ada('POST', `/tasks/${ship.id}/complete`, await claim(ada, ship.id))
+    expect(await stateOf(ada, announce.id)).toBe('ready')
+
+    // A thread made a task, and each task of a batch, takes one too.
+    const issue = (await ada('POST', '/messages', { channel: 'issues', text: 'export times out past 10k rows' })).body.message
+    expect((await ada('POST', '/tasks', { re: issue.id, notBefore: at(3 * HOUR) })).body.task.task).toMatchObject({ state: 'waiting', notBefore: at(3 * HOUR) })
+    const batch = await ada('POST', '/tasks/batch', { channel: 'work', tasks: [{ text: 'one', notBefore: at(3 * HOUR) }, { text: 'two', notBefore: at(-HOUR) }, { text: 'three' }] })
+    expect(batch.body.tasks.map((root: MessageView) => [root.task!.state, root.task!.notBefore])).toEqual([['waiting', at(3 * HOUR)], ['ready', at(-HOUR)], ['ready', null]])
+    await advance(HOUR)
+    expect(await stateOf(ada, issue.id)).toBe('ready')
+    expect(await stateOf(ada, batch.body.tasks[0].id)).toBe('ready')
+
+    // One held for a person when its time came is ready once the hold is lifted.
+    const held = await task(ada, 'held', { notBefore: at(4 * HOUR) })
+    await ada('POST', `/tasks/${held.id}/block`, { reason: 'which release?' })
+    await advance(HOUR)
+    expect(await stateOf(ada, held.id)).toBe('blocked')
+    expect((await ada('POST', `/tasks/${held.id}/unblock`)).body.task.task.state).toBe('ready')
+    // And one that comes to need nothing still waits for its time.
+    const first = await task(ada, 'first')
+    const second = await task(ada, 'second', { needs: [first.id], notBefore: at(5 * HOUR) })
+    expect((await ada('POST', `/tasks/${second.id}/needs`, { needs: [] })).body.task.task).toMatchObject({ state: 'waiting', needs: [] })
+  })
+
+  it("is claimed once its time has come on a board with no timer, which readies it in the claim's own write", async () => {
+    const { ada } = setup({ scheduler: undefined })
+    const later = await task(ada, 'later', { notBefore: at(MINUTE) })
+    expect(code(await ada('POST', `/tasks/${later.id}/claim`, {}))).toEqual([409, 'task_waiting'])
+    vi.setSystemTime(T0 + MINUTE)
+    // Nothing readies it until a claim looks at the clock.
+    expect(await stateOf(ada, later.id)).toBe('waiting')
+    let { cursor } = (await ada('GET', '/events')).body
+    expect((await claim(ada, later.id)).epoch).toBe(1)
+    expect((await events(ada, cursor)).filter((event) => event.message?.id === later.id).map((event) => event.type)).toEqual(['task.ready', 'task.claimed'])
+    // The next ready task, too, and never one that still waits for what it needs.
+    const fix = await task(ada, 'fix it')
+    await task(ada, 'review it', { needs: [fix.id], notBefore: at(2 * MINUTE) })
+    const next = await task(ada, 'next', { notBefore: at(2 * MINUTE) })
+    expect((await ready(ada)).body.task.id).toBe(fix.id)
+    expect((await ready(ada)).body.task).toBeNull()
+    vi.setSystemTime(T0 + 2 * MINUTE)
+    ;({ cursor } = (await ada('GET', '/events')).body)
+    expect((await ready(ada)).body.task).toMatchObject({ id: next.id, task: { state: 'claimed', notBefore: at(2 * MINUTE) } })
+    expect((await ready(ada)).body.task).toBeNull()
+    expect((await events(ada, cursor)).filter((event) => event.type.startsWith('task.')).map((event) => [event.type, event.message?.id])).toEqual([
+      ['task.ready', next.id],
+      ['task.claimed', next.id],
+    ])
+  })
+
+  it("changes as what it needs does: its owner's, while no one holds it and it isn't finished", async () => {
+    const { ada, bo, board, advance } = setup()
+    const keys = await task(ada, 'rotate the keys')
+    let { cursor } = (await ada('GET', '/events')).body
+    const moved = await notBefore(ada, keys.id, at(HOUR))
+    expect(moved.status).toBe(200)
+    expect(moved.body.task).toMatchObject({ labels: { 'board.task': 'waiting' }, task: { state: 'waiting', notBefore: at(HOUR) } })
+    const [changed] = (await events(ada, cursor)).filter((event) => event.message?.id === keys.id)
+    expect(changed).toMatchObject({ type: 'task.not_before_changed', payload: { id: keys.id, thread: keys.thread, notBefore: at(HOUR), by: { actor: ADA, principal: ADA, profile: null } }, actor: { id: ADA } })
+    // The same time changes nothing; one that has come readies it in the same write, and none at once.
+    ;({ cursor } = (await ada('GET', '/events')).body)
+    await notBefore(ada, keys.id, at(HOUR))
+    expect(await events(ada, cursor)).toEqual([])
+    expect((await notBefore(ada, keys.id, at(-MINUTE))).body.task.task).toMatchObject({ state: 'ready', notBefore: at(-MINUTE) })
+    expect((await events(ada, cursor)).map((event) => [event.type, event.message?.task?.state])).toEqual([
+      ['task.not_before_changed', 'waiting'],
+      ['task.ready', 'ready'],
+    ])
+    expect((await notBefore(ada, keys.id, null)).body.task.task).toMatchObject({ state: 'ready', notBefore: null })
+    expect(code(await notBefore(ada, keys.id, 'soon'))).toEqual([400, 'invalid_request'])
+
+    // Its owner changes it, or manage in its channel, and no one else.
+    expect(code(await notBefore(web(board), keys.id, at(HOUR)))).toEqual([403, 'task_not_owned'])
+    expect((await notBefore(bo, keys.id, at(2 * HOUR))).body.task.task).toMatchObject({ state: 'waiting', notBefore: at(2 * HOUR), owner: ADA })
+    expect(code(await notBefore(ada, (await ada('POST', '/messages', { channel: 'work', text: 'not a task' })).body.message.id, at(HOUR)))).toEqual([404, 'not_a_task'])
+    // A timer for a time it no longer has fires into nothing: the one for its time now readies it.
+    await advance(HOUR)
+    expect(await stateOf(ada, keys.id)).toBe('waiting')
+    await advance(HOUR)
+    expect(await stateOf(ada, keys.id)).toBe('ready')
+
+    // A claim was taken on when it could start: no one changes that under it. One whose lease ran out is over first.
+    const held = await claim(bo, keys.id, { lease: 60 })
+    expect(code(await notBefore(ada, keys.id, at(3 * HOUR)))).toEqual([409, 'task_claimed'])
+    // The clock moves past the lease with no timer delivered: the change itself writes the expiry.
+    ;({ cursor } = (await ada('GET', '/events')).body)
+    vi.setSystemTime(Date.now() + 2 * MINUTE)
+    expect((await notBefore(ada, keys.id, at(5 * HOUR))).body.task.task).toMatchObject({ state: 'waiting', claim: null, epoch: held.epoch })
+    expect((await events(ada, cursor)).map((event) => event.type)).toEqual(['task.expired', 'task.not_before_changed'])
+    // One held for a person stays held.
+    await ada('POST', `/tasks/${keys.id}/block`, { reason: 'which release?' })
+    expect((await notBefore(ada, keys.id, null)).body.task.task).toMatchObject({ state: 'blocked', notBefore: null })
+    // A finished task's stays as it was.
+    await ada('POST', `/tasks/${keys.id}/cancel`, { reason: 'not needed' })
+    expect(code(await notBefore(ada, keys.id, at(HOUR)))).toEqual([409, 'task_finished'])
   })
 })
 
@@ -1819,6 +1961,25 @@ describe("the fold, for whoever folds the board's events themselves", () => {
     // And it's no version of a task it didn't change, or of a reply.
     expect(folded(created, claimed(1), rewired).byId[1]!.version).toBe(4)
     expect(folded(['task.needs_changed', { id: 2, thread: 'root', needs: [7], by }]).byId[2]!.task).toBeUndefined()
+  })
+
+  it('holds a task that has a not-before date waiting until task.ready, as one that needs others, and changes it only while open and unclaimed', () => {
+    const startOf = (...payloads: [string, object][]) => folded(...payloads).byId[1]!
+    const later: [string, object] = ['task.not_before_changed', { ...about, notBefore: at(HOUR), by }]
+    const none: [string, object] = ['task.not_before_changed', { ...about, notBefore: null, by }]
+    expect(startOf(created).task).toMatchObject({ state: 'ready', notBefore: null })
+    expect(startOf(['task.created', { ...about, needs: [], for: null, notBefore: at(HOUR), by }]).task).toMatchObject({ state: 'waiting', notBefore: at(HOUR) })
+    expect(startOf(created, later).task).toMatchObject({ state: 'waiting', notBefore: at(HOUR) })
+    expect(startOf(created, later, ['task.ready', about]).task).toMatchObject({ state: 'ready' })
+    expect(startOf(created, later, none).task).toMatchObject({ state: 'ready', notBefore: null })
+    // It waits again as it's unblocked, or as what it needs changes, while it has a time: task.ready says it came.
+    const held: [string, object] = ['task.blocked', { ...about, kind: null, reason: 'which?', by }]
+    expect(startOf(created, held, later).task).toMatchObject({ state: 'blocked', notBefore: at(HOUR) })
+    expect(startOf(created, held, later, ['task.unblocked', { ...about, by }]).task).toMatchObject({ state: 'waiting' })
+    expect(startOf(created, later, ['task.ready', about], ['task.needs_changed', { ...about, needs: [], by }]).task).toMatchObject({ state: 'waiting' })
+    // A claim holds it as it was, and a finished task's stays.
+    expect(startOf(created, claimed(1), later).task).toMatchObject({ state: 'claimed', notBefore: null })
+    expect(startOf(created, ['task.canceled', { ...about, reason: 'no', by }], later).task).toMatchObject({ state: 'canceled', notBefore: null })
   })
 
   it('keeps tasks on roots that are there: a reply is no task, and a deleted root wears no label', () => {

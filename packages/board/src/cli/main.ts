@@ -22,7 +22,7 @@ import { explainPrincipalOf, explanationLine, GrantMisuse, grantCanOf, KINDS, pa
 import { formatSchema, formatSchemas } from './schemas.ts'
 import { parseSchemaId } from '../contract/data-schemas.ts'
 import { block } from '../contract/blocks.ts'
-import { actorName, claimLine, formatAccess, formatConformance, formatEvent, formatGrants, grantRow, formatSchedule, formatTasks, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
+import { actorName, claimLine, formatAccess, formatConformance, formatEvent, formatGrants, grantRow, formatSchedule, formatTasks, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, shortTime, terminalText, who } from './format.ts'
 import { fileClaims, memoryClaims, tokenClaims, type Claims } from './claims.ts'
 import { runCommand } from './run.ts'
 import { AGENTS, allowRules, cliOf, disallow, installedHook, tilde, uninstallHook, type HookAgent } from './hooks.ts'
@@ -753,9 +753,9 @@ function onlyPrincipalFlags(verb: 'create' | 'update' | 'explain') {
 }
 
 /** A time flag: anything `Date` reads, as ISO. */
-function instant(flag: string, value: string): string {
+function instant(flag: string, value: string, takes = `--${flag} takes`): string {
   const time = new Date(value)
-  if (Number.isNaN(time.getTime())) throw usage(`--${flag} takes a time like 2026-10-08T09:00:00Z, and ${value} isn't one.`)
+  if (Number.isNaN(time.getTime())) throw usage(`${takes} a time like 2026-10-08T09:00:00Z, and ${value} isn't one.`)
   return time.toISOString()
 }
 
@@ -897,6 +897,7 @@ function doing(): string {
       if (a === 'create') return b !== undefined && isMessageRef(b) ? `make ${ref(b)} a task` : `create a task in ${b ?? 'a channel'}`
       if (a === 'renew') return `renew the claim on ${one}`
       if (a === 'needs') return `change what ${one} needs`
+      if (a === 'not-before') return `change when ${one} may start`
       return `${a} ${one}`
     }
     case 'grants':
@@ -2195,7 +2196,7 @@ function unknownCommand(command: string): Failed {
 }
 
 /** What `tasks` does to a task, by the word after it: any other word is a channel to list. */
-const TASK_VERBS = new Set(['create', 'claim', 'run', 'renew', 'release', 'complete', 'fail', 'block', 'unblock', 'reopen', 'assign', 'needs', 'cancel'])
+const TASK_VERBS = new Set(['create', 'claim', 'run', 'renew', 'release', 'complete', 'fail', 'block', 'unblock', 'reopen', 'assign', 'needs', 'not-before', 'cancel'])
 const TASK_STATES = ['waiting', 'ready', 'claimed', 'blocked', 'completed', 'failed', 'canceled']
 
 /** A task's ID as you'd write it: `#812` or `812`. */
@@ -2223,7 +2224,7 @@ async function createPlan(target: string, text: string | undefined, path: string
   if (text !== undefined) throw usage("Text is one task's: with --file, each task in the file has its own.")
   // What the file holds comes first: one task's text in it means these options are that task's, on stdin.
   const parsed = await planSource(path)
-  const own = (['label', 'needs', 'for', 'claim', 'lease', 'no-sync'] as const).find((name) => (flags as Record<string, unknown>)[name] !== undefined && (flags as Record<string, unknown>)[name] !== false)
+  const own = (['label', 'needs', 'for', 'not-before', 'claim', 'lease', 'no-sync'] as const).find((name) => (flags as Record<string, unknown>)[name] !== undefined && (flags as Record<string, unknown>)[name] !== false)
   if (own !== undefined) throw usage(`--${own} is one task's: with --file, each task in the file has its own.`)
   const board = client()
   const tasks = await planFrom(parsed, path, board)
@@ -2260,7 +2261,7 @@ async function createPlan(target: string, text: string | undefined, path: string
 }
 
 /** What a task of a plan's `--file` takes, as `tasks.createMany` does. */
-const PLAN_KEYS = ['key', 'text', 'labels', 'needs', 'for', 'noSync', 'attachments']
+const PLAN_KEYS = ['key', 'text', 'labels', 'needs', 'for', 'notBefore', 'noSync', 'attachments']
 
 /** The help page that says what a plan holds. */
 const planHelp = (): Recovery => ({ instruction: 'See what a plan takes', argv: [...cli(), 'tasks', 'create', '--help'] })
@@ -2352,9 +2353,16 @@ async function planFrom(parsed: unknown, path: string, board: Board): Promise<Ta
   const named = plan.some((task) => typeof task.for === 'string' && !task.for.includes(':'))
   const principal = named ? (await board.me()).principal : ''
   const keys = new Set(plan.flatMap((task) => (typeof task.key === 'string' ? [task.key] : [])))
-  return plan.map((task) => ({
+  /** The time before which a task waits, as `--not-before` takes one: any time Date reads, in UTC. */
+  const notBeforeOf = (time: string, at: number) => {
+    const parsed = new Date(time)
+    if (Number.isNaN(parsed.getTime())) throw usage(`Task ${at + 1} of ${where} waits until ${time}, which isn't a time like 2026-10-08T09:00:00Z.`, { next: [planHelp()] })
+    return parsed.toISOString()
+  }
+  return plan.map((task, at) => ({
     ...task,
     ...(Array.isArray(task.needs) ? { needs: task.needs.map((need) => boardNeed(need, keys)) } : {}),
+    ...(typeof task.notBefore === 'string' ? { notBefore: notBeforeOf(task.notBefore, at) } : {}),
     ...(typeof task.for === 'string' && !task.for.includes(':') ? { for: profileActor(principal, task.for) } : {}),
   })) as TaskInBatch[]
 }
@@ -2598,6 +2606,7 @@ async function tasks(args: string[]): Promise<number> {
     const about = {
       ...(flags.needs?.length ? { needs: flags.needs.map((id) => taskId(id)) } : {}),
       ...(flags.for ? { for: profileActor((await board.me()).principal, flags.for) } : {}),
+      ...(flags['not-before'] ? { notBefore: instant('not-before', flags['not-before']) } : {}),
       ...(claimFlag() ? { claim: true } : {}),
       ...(lease !== undefined ? { lease } : {}),
       ...(claimFlag() && io.claimToken !== undefined ? { token: io.claimToken } : {}),
@@ -2800,6 +2809,17 @@ async function tasks(args: string[]): Promise<number> {
       else out(`${messageRef(id)} needs ${now.length ? now.map((need) => ref(need)).join(' ') : 'nothing'}`)
       return 0
     }
+    case 'not-before': {
+      const [, time, extra] = rest
+      if (extra) throw usage(`tasks not-before takes a task and a time: ${extra} is one too many.`)
+      if (flags.none && time) throw usage(`A time is when ${ref(id)} may start, and --none is no time: pass one of them.`)
+      if (!flags.none && !time) throw usage('Missing when it may start, such as 2026-11-30T09:00Z, or --none for no time.', { reason: 'missing_arguments' })
+      const task = await board.tasks.notBefore(id, time ? instant('not-before', time, 'A not-before date is') : null)
+      const notBefore = task.task?.notBefore || null
+      if (flags.json) result({ task, outcome: 'set' })
+      else out(notBefore ? `${messageRef(id)} waits until ${shortTime(notBefore)}` : `${messageRef(id)} waits for no time`)
+      return 0
+    }
     default: {
       // cancel
       one(rest[2], 'a task and a reason, quoted')
@@ -2847,7 +2867,7 @@ function taskFailure(code: string, status: number): { class: Failure['class']; m
     case 'task_assigned':
       return { class: 'conflict', message: `Can't ${doing()}. It's assigned to another profile.`, next: [...read("See whom it's for"), ...also('Or, as its owner, return it to the pool', 'assign', '--pool')] }
     case 'task_waiting':
-      return { class: 'conflict', message: `Can't ${doing()}. It waits for other tasks.`, next: read('See what it waits for') }
+      return { class: 'conflict', message: `Can't ${doing()}. It waits for other tasks, or a time.`, next: read('See what it waits for') }
     case 'task_blocked':
       return { class: 'conflict', message: `Can't ${doing()}. It's held for a person.`, next: [...read("See what it's held for"), ...also('Or, as its owner, lift the hold', 'unblock')] }
     case 'task_finished':

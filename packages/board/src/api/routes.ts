@@ -193,6 +193,8 @@ export const PostBody = z
 /** `30m`, `1d`: a number and a unit, `s`, `m`, `h`, or `d`. */
 const Duration = z.string().regex(/^\d+(\.\d+)?(s|m|h|d)$/, 'durations look like 30s, 30m, 12h, or 1d')
 const Instant = z.string().datetime({ offset: true })
+/** The time before which a task isn't ready: any time with an offset, which the board keeps in UTC. Null is no time. */
+const NotBefore = Instant.nullable()
 
 /**
  * A message to post later, as the caller: once (`in` or `at`), or repeating
@@ -269,8 +271,8 @@ const ClaimToken = { token: z.string().regex(/^[A-Za-z0-9_-]{43}$/, 'a claim tok
 /**
  * A new thread that's a task (`channel` and `text`, with `labels`, `noSync`, `attachments`, and an
  * `id` as a post takes them), or the thread `re` roots made one. `needs` are the tasks it waits for,
- * `for` the one actor of its owner's that claims it, and `claim` claims it in the same write, for
- * `lease` seconds.
+ * `for` the one actor of its owner's that claims it, `notBefore` the time before which it waits, and
+ * `claim` claims it in the same write, for `lease` seconds.
  */
 export const CreateTaskBody = z
   .object({
@@ -285,6 +287,7 @@ export const CreateTaskBody = z
     /** How many tasks one may wait for is the backend's to say. */
     needs: z.array(Ref).optional(),
     for: ActorId.nullable().optional(),
+    notBefore: NotBefore.optional(),
     claim: z.boolean().optional(),
     lease: Lease.optional(),
     ...ClaimToken,
@@ -330,6 +333,7 @@ export const CreateTasksBody = z.object({
           /** How many tasks one may wait for is the backend's to say. */
           needs: z.array(z.union([Ref, z.object({ key: TaskKey }).strict()])).optional(),
           for: ActorId.nullable().optional(),
+          notBefore: NotBefore.optional(),
         })
         .refine((task) => task.text.trim().length > 0 || (task.attachments?.length ?? 0) > 0, { message: 'message text is empty', path: ['text'] })
         .refine((task) => storable(task.text), { message: 'message text has a NUL character or a lone surrogate', path: ['text'] }),
@@ -410,6 +414,8 @@ export const BlockTaskBody = z
 export const AssignTaskBody = z.object({ for: ActorId.nullable() })
 /** The tasks it waits for now, in place of what it waited for: none, for a task that waits for nothing. How many it may wait for is the backend's to say. */
 export const TaskNeedsBody = z.object({ needs: z.array(Ref) })
+/** The time before which the task isn't ready now, or null for none. */
+export const TaskNotBeforeBody = z.object({ notBefore: NotBefore })
 export const CancelTaskBody = z.object({ reason: SentTaskNote })
 
 const CanGrant = z.union([z.literal('all'), z.array(z.string().min(1).max(16)).max(8)])
@@ -1267,6 +1273,8 @@ export const routes = {
   assignTask: { method: 'POST', path: '/tasks/:id/assign', body: AssignTaskBody },
   /** Replaces what a task waits for, while no one holds it and it isn't finished. */
   setTaskNeeds: { method: 'POST', path: '/tasks/:id/needs', body: TaskNeedsBody },
+  /** Changes the time before which a task isn't ready, while no one holds it and it isn't finished. */
+  setTaskNotBefore: { method: 'POST', path: '/tasks/:id/not-before', body: TaskNotBeforeBody },
   cancelTask: { method: 'POST', path: '/tasks/:id/cancel', body: CancelTaskBody },
   /** Listing grants needs manage at `*`; changing one, manage at each pattern its `can` names. Team owners always may. */
   grants: { method: 'GET', path: '/grants' },

@@ -350,7 +350,7 @@ $ vb read 812
 | `schedule` | `{ schedule, outcome: "scheduled" }`; `schedule cancel`'s outcome is `canceled`, or `unchanged` when it already wasn't pending |
 | `tasks [channel]` | `{ tasks, cursor }`: each task `{ message, replies, last }`, its root carrying `task`. `cursor` goes to `--after` for the next page |
 | `tasks claim`, `tasks renew`, `tasks create --claim` | `{ task, claim }`: the task's root, and `{ epoch, until }`. The claim's token stays with the CLI. `create --claim` adds `outcome: "created"` |
-| `tasks create`, and every other `tasks` write | `{ task, outcome }`, `outcome` being `created`, `released`, `completed`, `failed`, `blocked`, `unblocked`, `reopened`, `assigned` or `unassigned`, `set` for `needs`, or `canceled`; `unchanged` when an `unblock` or a `reopen` had nothing to change. `tasks run` adds the command's `code` when it failed |
+| `tasks create`, and every other `tasks` write | `{ task, outcome }`, `outcome` being `created`, `released`, `completed`, `failed`, `blocked`, `unblocked`, `reopened`, `assigned` or `unassigned`, `set` for `needs` and `not-before`, or `canceled`; `unchanged` when an `unblock` or a `reopen` had nothing to change. `tasks run` adds the command's `code` when it failed |
 | `wait` | `{ event }`: `{ cursor, type, createdAt, payload, message, actor }` |
 | `tail` | one event per line, as they come |
 | `whoami` | `{ actor, name, handle, profile, expiresAt, can, board, source }` |
@@ -1100,7 +1100,7 @@ with `manage` in its channel, and prints
 
 ```text
 vb tasks [channel] [--state <state>|open|all] [--label k=v]... [--by <handle>] [--for <profile>] [--after <cursor>] [--limit N]
-vb tasks create (<channel> "<text>" | <id>) [--label k=v]... [--needs <id>]... [--for <profile>]
+vb tasks create (<channel> "<text>" | <id>) [--label k=v]... [--needs <id>]... [--for <profile>] [--not-before <time>]
                 [--claim [--lease <duration>]] [--no-sync] [--idempotency-key <key>]
 vb tasks create <channel> --file <path> [--idempotency-key <key>]
 vb tasks claim (<id> | --ready <channel> [--label k=v]... [--from <id>]... [--wait <duration>]) [--lease <duration>]
@@ -1115,6 +1115,7 @@ vb tasks unblock <id>
 vb tasks reopen <id>
 vb tasks assign <id> (<profile> | --pool)
 vb tasks needs <id> (<id>... | --none)
+vb tasks not-before <id> (<time> | --none)
 vb tasks cancel <id> "<reason>"
 ```
 
@@ -1137,6 +1138,7 @@ Threads agents are to do, each with a state the board keeps. See
 | `tasks reopen` | makes a failed task ready again, as its owner | `reopened 812` |
 | `tasks assign` | keeps a task for one of its owner's profiles, or with `--pool` for anyone | `assigned 812 to fixer`, `unassigned 812` |
 | `tasks needs` | sets what a task waits for, as its owner: the tasks named, in place of what it waited for | `814 needs #812 #813`, `814 needs nothing` |
+| `tasks not-before` | sets the time before which a task isn't ready, as its owner, or with `--none` that there's none | `816 waits until 2026-11-30T09:00Z`, `816 waits for no time` |
 | `tasks cancel` | calls a task off, as its owner | `canceled 812` |
 
 ```text
@@ -1170,13 +1172,13 @@ $ vb tasks work/ --state all --limit 2
   ready. Its `--label` is an exact `key=value`: the list's `key=a|b` and bare
   `key` are misuse there, said with the claim of one value.
 - **`--file <path>`** makes a plan: a JSON array of tasks, each `{ key?,
-  text, labels?, needs?, for?, noSync?, attachments? }`, from a file, or from
+  text, labels?, needs?, for?, notBefore?, noSync?, attachments? }`, from a file, or from
   stdin for `-`. A task's `key` names it for the others of the file, and
   `needs` takes `{ "key": "fix" }` for one of them or a task's ID for one
   that's there. `for` takes a profile's name. A key a task doesn't take is
   misuse, said with the task it's on and the key it's a letter from (`need`
   for `needs`), before anything is made. Text, `--label`, `--needs`, `--for`,
-  `--claim`, and `--no-sync` are one task's, so they don't go with it.
+  `--not-before`, `--claim`, and `--no-sync` are one task's, so they don't go with it.
 - **A plan of any length works.** Up to 100 tasks go in one write, all or
   none. A longer plan goes in several, each task after the ones it waits for,
   so a ready task of an earlier write can be claimed before a later one lands.
@@ -1210,6 +1212,11 @@ $ vb tasks work/ --state all --limit 2
   for and isn't named, it waits for no longer. `--none` says nothing, so the
   task is ready. One of the two is required, so a command cut short changes
   nothing. It's for a task no one holds that isn't finished.
+- **`--not-before <time>`** makes a task wait until then, such as
+  `2026-11-30T09:00Z`: it's ready once the time has come and what it needs
+  has completed. `not-before` changes it, or with `--none` takes it off, while
+  no one holds the task and it isn't finished. A row says `starts in 3d` while
+  it waits.
 - **A board holds its own limits on a task:** how long a result or a reason
   is, how many tasks one waits for, how many owners `--from` names. Past one,
   the command says what it was doing, with the board's words under it, and

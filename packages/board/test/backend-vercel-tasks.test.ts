@@ -61,6 +61,7 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 const JULIAN = 'vercel:user:u_jb'
 const ADA = 'vercel:user:u_ada'
 const MINUTE = 60_000
+const HOUR = 60 * MINUTE
 
 afterEach(() => {
   vi.useRealTimers()
@@ -92,6 +93,7 @@ describe("vercel()'s tasks", () => {
       'changes what a task needs: it waits for the new ones, is ready once they have completed, and at once with none': 'passed',
       'refuses a change of needs that would make a task wait for itself, straight back or through others': 'passed',
       'changes what a task needs only while no one holds it and it has not finished': 'passed',
+      'holds a task until its not-before time, readies it once its time has come and what it needs has completed, and lets its owner change it while no one holds it': 'passed',
       'makes several tasks in one write, in the order given: each waits for the ones it names, of the batch or there already, and an id makes them once': 'passed',
       'makes none of a batch when one of its tasks can not be made, wherever it comes in it': 'passed',
       'holds a task for a person, by its owner or its claim, and gives it back when unblocked': 'passed',
@@ -209,7 +211,7 @@ describe("vercel()'s tasks", () => {
     // A task is its root: its ID is the root message's, and it reads as its thread does.
     expect(fix.id).toMatch(/^msg_[0-9a-f-]{36}_1$/)
     expect(fix).toMatchObject({ channel: 'work', text: 'fix CVE-123 in acme/web', re: null, labels: { step: 'fix', 'board.task': 'ready' } })
-    expect(fix.task).toEqual({ state: 'ready', owner: JULIAN, by: JULIAN, for: null, needs: [], epoch: 0, claim: null, blocked: null, result: null, reason: null })
+    expect(fix.task).toEqual({ state: 'ready', owner: JULIAN, by: JULIAN, for: null, needs: [], epoch: 0, claim: null, blocked: null, result: null, reason: null, notBefore: null })
     // What it waits for is named by its root's ID, as the board names a task, where the API names its thread.
     expect(review.task).toMatchObject({ state: 'waiting', needs: [fix.id], for: `${JULIAN}+reviewer` })
     expect(review.labels['board.task']).toBe('waiting')
@@ -808,6 +810,60 @@ describe("vercel()'s tasks", () => {
     await expect(julian.tasks.needs(a.id, [behind.id])).rejects.toMatchObject({ status: 400, code: 'invalid_needs' })
     expect((await julian.thread(a.id)).message.task).toMatchObject({ state: 'ready', needs: [] })
   }, 120_000)
+
+  it("sends when a task may start in milliseconds, as the API keeps times, changes it on the API's route, and has a claim ready one whose time has come", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const api = fakeMessageboard()
+    const julian = handleOn(api)
+    const later = new Date(Date.now() + HOUR).toISOString()
+    const start = (await julian.poll({ channel: 'work' })).cursor
+    const { task: keys } = await julian.tasks.create('work', { text: 'rotate the keys', notBefore: later })
+    expect(julian.wrote().body).toMatchObject({ channel: 'work', text: 'rotate the keys', notBefore: Date.parse(later) })
+    expect(keys.task).toMatchObject({ state: 'waiting', notBefore: later })
+    const [batched] = await julian.tasks.createMany('work', [{ text: 'one', notBefore: later }])
+    expect(julian.wrote().body!.tasks).toEqual([{ text: 'one', notBefore: Date.parse(later) }])
+    expect(batched!.task).toMatchObject({ state: 'waiting', notBefore: later })
+    const issue = await julian.post('issues', 'export times out past 10k rows')
+    expect((await julian.tasks.create({ re: issue.id }, { notBefore: later })).task.task).toMatchObject({ state: 'waiting', notBefore: later })
+    expect(julian.wrote().body).toMatchObject({ threadId: threadOf(issue.id), notBefore: Date.parse(later) })
+    // A task made with no time sends none, and one whose time has passed is ready as it's made.
+    await julian.tasks.create('work', { text: 'whenever' })
+    expect(julian.wrote().body).not.toHaveProperty('notBefore')
+    expect((await julian.tasks.create('work', { text: 'renew the cert', notBefore: '2020-01-01T00:00:00.000Z' })).task.task).toMatchObject({ state: 'ready' })
+    const made = (await julian.poll({ channel: 'work', after: start })).events.find((event) => event.type === 'task.created' && event.message?.id === keys.id)
+    expect(made?.payload).toMatchObject({ id: keys.id, notBefore: later })
+
+    // Before its time a claim is refused, and once it has come, the claim that takes it readies it in its own write.
+    await expect(julian.tasks.claim(keys.id)).rejects.toMatchObject({ status: 409, code: 'task_waiting' })
+    vi.setSystemTime(Date.now() + HOUR + 1000)
+    const { cursor } = await julian.poll({ channel: 'work' })
+    const next = await julian.tasks.claim({ channel: 'work', label: {} })
+    expect(next?.task.id).toBe(keys.id)
+    const by = { actor: JULIAN, principal: JULIAN, profile: null }
+    expect((await julian.poll({ channel: 'work', after: cursor })).events.filter((event) => event.message?.id === keys.id).map((event) => event.type)).toEqual(['task.ready', 'task.claimed'])
+    await next!.complete()
+
+    // Its owner changes it on the API's route, to a time or to none, while no one holds it.
+    const ahead = new Date(Date.now() + HOUR).toISOString()
+    const { task: cert } = await julian.tasks.create('work', { text: 'renew it' })
+    const after = (await julian.poll({ channel: 'work' })).cursor
+    const moved = await julian.tasks.notBefore(cert.id, ahead)
+    expect(julian.wrote()).toMatchObject({ method: 'POST', version: 2, path: `/tasks/${threadOf(cert.id)}/not-before` })
+    expect(julian.wrote().body).toEqual({ operationId: expect.any(String), notBefore: Date.parse(ahead) })
+    expect(moved.task).toMatchObject({ state: 'waiting', notBefore: ahead })
+    expect((await julian.tasks.notBefore(cert.id, null)).task).toMatchObject({ state: 'ready', notBefore: null })
+    expect(julian.wrote().body).toEqual({ operationId: expect.any(String), notBefore: null })
+    expect((await julian.poll({ channel: 'work', after })).events.filter((event) => event.message?.id === cert.id).map((event) => [event.type, event.payload])).toEqual([
+      ['task.not_before_changed', { id: cert.id, thread: threadOf(cert.id), notBefore: ahead, by }],
+      ['task.not_before_changed', { id: cert.id, thread: threadOf(cert.id), notBefore: null, by }],
+    ])
+    // What the API refuses is a board's: someone else's task, a held one, and a finished one.
+    await expect(handleOn(api, 'project:prj_web:production').tasks.notBefore(cert.id, null)).rejects.toMatchObject({ status: 403, code: 'task_not_owned' })
+    const held = await julian.tasks.claim(cert.id, { lease: 60 })
+    await expect(julian.tasks.notBefore(cert.id, ahead)).rejects.toMatchObject({ status: 409, code: 'task_claimed' })
+    await held.complete()
+    await expect(julian.tasks.notBefore(cert.id, null)).rejects.toMatchObject({ status: 409, code: 'task_finished' })
+  })
 
   it("has a claim whose lease ran out expire before what its task needs changes, in the change's own write", async () => {
     vi.useFakeTimers({ toFake: ['Date'] })

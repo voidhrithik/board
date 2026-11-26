@@ -150,6 +150,7 @@ export const options = {
   // Tasks.
   state: { type: 'string', value: 'state', description: 'in a state: waiting, ready, claimed, blocked, completed, failed, canceled, open, or all (default: open)' },
   needs: { type: 'string', multiple: true, value: 'id', description: 'wait for a task to complete first' },
+  'not-before': { type: 'string', value: 'time', description: 'wait until then, such as 2026-11-30T09:00Z' },
   ready: { type: 'boolean', description: 'the oldest ready task in a channel, or under a prefix (work/)' },
   from: { type: 'string', multiple: true, value: 'id', description: "with --ready: take this owner's tasks too, by their ID" },
   wait: { type: 'string', value: 'duration', description: 'with --ready: how long to wait for one, e.g. 10m' },
@@ -596,15 +597,17 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
           option('label', 'label it, to route it', 'k=v'),
           option('needs'),
           option('for', 'only this profile of yours claims it', 'profile'),
+          option('not-before'),
           claimNow,
           option('lease', 'with --claim: how long to hold it'),
-          option('file', 'a plan, from a JSON file (- reads stdin): an array of tasks, each { key?, text, labels?, needs?, for?, noSync?, attachments? }, all made, in as many writes as it takes. needs takes a key of the plan ("fix" or {"key": "fix"}) or a task that\'s there by its ID ("812" or {"id": "812"})'),
+          option('file', 'a plan, from a JSON file (- reads stdin): an array of tasks, each { key?, text, labels?, needs?, for?, notBefore?, noSync?, attachments? }, all made, in as many writes as it takes. needs takes a key of the plan ("fix" or {"key": "fix"}) or a task that\'s there by its ID ("812" or {"id": "812"})'),
           option('no-sync'),
           option('idempotency-key', 'sending the same one again makes it once'),
         ],
         examples: [
           { name: 'hand a fix to whoever takes fixes', value: 'tasks create work "fix CVE-123 in acme/web" --label step=fix' },
           { name: 'a review that waits for it', value: 'tasks create work "review the fix for CVE-123" --label step=review --needs 812' },
+          { name: 'a task that waits until a time', value: 'tasks create work "rotate the deploy keys" --not-before 2026-11-30T09:00Z' },
           { name: 'make a task of a thread that is there', value: 'tasks create 812' },
           { name: 'a plan of tasks that wait for each other', value: 'tasks create work --file plan.json --idempotency-key migration-7' },
         ],
@@ -699,6 +702,16 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
         examples: [
           { name: 'wait for two tasks', value: 'tasks needs 814 812 813' },
           { name: 'wait for nothing', value: 'tasks needs 814 --none' },
+        ],
+      },
+      {
+        name: 'not-before',
+        description: 'set the time before which a task is not ready, as its owner, while no one holds it',
+        arguments: [task(), { name: 'time', required: false, description: 'when it may start, such as 2026-11-30T09:00Z' }],
+        options: [option('none', 'no time')],
+        examples: [
+          { name: 'wait until a time', value: 'tasks not-before 816 2026-11-30T09:00Z' },
+          { name: 'wait for no time', value: 'tasks not-before 816 --none' },
         ],
       },
       {

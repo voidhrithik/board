@@ -182,6 +182,57 @@ describe("vb tasks, with the claim it keeps", () => {
     expect((await vb(['tasks', 'assign', id, 'fixer', '--pool'])).code).toBe(2)
   }, 60_000)
 
+  it('holds a task until its not-before time, says how long that is, and lets its owner change it while no one holds it', async () => {
+    const later = await create('timed', 'rotate the deploy keys', ['--not-before', '2099-11-30T09:00:00+01:00'])
+    const now = await create('timed', 'renew the cert', ['--not-before', '2020-01-01T09:00Z'])
+    expect((await task(later)).task).toMatchObject({ state: 'waiting', notBefore: '2099-11-30T08:00:00.000Z' })
+    expect((await task(now)).task).toMatchObject({ state: 'ready', notBefore: '2020-01-01T09:00:00.000Z' })
+    const bad = await vb(['tasks', 'create', 'timed', 'when?', '--not-before', 'someday'])
+    expect([bad.code, bad.stderr.split('\n')[0]]).toEqual([2, "error: --not-before takes a time like 2026-10-08T09:00:00Z, and someday isn't one."])
+    // Its row and read say how long it waits, and a claim is told it isn't ready.
+    const rows = (await ok(['tasks', 'timed'])).trimEnd().split('\n').map((line) => line.split(/ {2,}/))
+    expect(rows.map((row) => [row[0], row[1], row[3]])).toEqual([
+      [`#${later}`, 'waiting', expect.stringMatching(/^starts in \d+d$/)],
+      [`#${now}`, 'ready', undefined],
+    ])
+    expect(await ok(['read', later])).toMatch(/\n {6}task {2}waiting · starts in \d+d\n$/)
+    const early = await vb(['tasks', 'claim', later])
+    expect([early.code, early.stderr.split('\n')[0]]).toEqual([1, `error: Can't claim task #${later}. It waits for other tasks, or a time.`])
+
+    // A plan's notBefore is a time as --not-before takes one, and --not-before is one task's.
+    const plan = JSON.stringify([{ text: 'planned', notBefore: '2099-11-30T09:00Z' }])
+    const planned = (await ok(['tasks', 'create', 'elsewhere', '--file', '-'], {}, plan)).split(/ {2,}/)[0]!.slice(1)
+    expect((await task(planned)).task).toMatchObject({ state: 'waiting', notBefore: '2099-11-30T09:00:00.000Z' })
+    const both = await vb(['tasks', 'create', 'elsewhere', '--file', '-', '--not-before', '2099-11-30T09:00Z'], {}, plan)
+    expect([both.code, both.stderr.split('\n')[0]]).toEqual([2, "error: --not-before is one task's: with --file, each task in the file has its own."])
+    const unplanned = await vb(['tasks', 'create', 'elsewhere', '--file', '-'], {}, JSON.stringify([{ text: 'when?', notBefore: 'someday' }]))
+    expect([unplanned.code, unplanned.stderr.split('\n')[0]]).toEqual([2, "error: Task 1 of stdin waits until someday, which isn't a time like 2026-10-08T09:00:00Z."])
+
+    // Its owner changes it, to another time or to none, which readies it.
+    expect(await ok(['tasks', 'not-before', later, '2099-12-01T09:30:00+01:00'])).toBe(`${later} waits until 2099-12-01T08:30Z\n`)
+    expect(await ok(['tasks', 'not-before', later, '--none'])).toBe(`${later} waits for no time\n`)
+    expect(await state(later)).toBe('ready')
+    const json = JSON.parse(await ok(['tasks', 'not-before', later, '2099-11-30T09:00Z', '--json'])) as { task: MessageView; outcome: string }
+    expect(Object.keys(json).sort()).toEqual(['outcome', 'task'])
+    expect(json).toMatchObject({ outcome: 'set', task: { id: later, task: { state: 'waiting', notBefore: '2099-11-30T09:00:00.000Z' } } })
+    // Nothing is said, not left out, both is one too many, and a word is no time.
+    const bare = await vb(['tasks', 'not-before', later])
+    expect([bare.code, bare.stderr.split('\n')[0]]).toEqual([2, 'error: Missing when it may start, such as 2026-11-30T09:00Z, or --none for no time.'])
+    const twice = await vb(['tasks', 'not-before', later, '2099-11-30T09:00Z', '--none'])
+    expect([twice.code, twice.stderr.split('\n')[0]]).toEqual([2, `error: A time is when #${later} may start, and --none is no time: pass one of them.`])
+    const word = await vb(['tasks', 'not-before', later, 'tomorrow'])
+    expect([word.code, word.stderr.split('\n')[0]]).toEqual([2, "error: A not-before date is a time like 2026-10-08T09:00:00Z, and tomorrow isn't one."])
+    // It's its owner's to change, not while someone holds it, and a finished task's stays as it was.
+    const theirs = await vb(['tasks', 'not-before', later, '--none'], await deployment())
+    expect([theirs.code, theirs.stderr.split('\n')[0]]).toEqual([1, `error: You can't change when task #${later} may start. It's someone else's.`])
+    await ok(['tasks', 'claim', now])
+    const held = await vb(['tasks', 'not-before', now, '2099-11-30T09:00Z'])
+    expect([held.code, held.stderr.split('\n')[0]]).toEqual([1, `error: Can't change when task #${now} may start. Someone holds it.`])
+    await ok(['tasks', 'complete', now, 'renewed'])
+    const done = await vb(['tasks', 'not-before', now, '--none'])
+    expect([done.code, done.stderr.split('\n')[0]]).toEqual([1, `error: Can't change when task #${now} may start. It's finished.`])
+  }, 60_000)
+
   it('sets what a task waits for, in place of what it waited for, and nothing with --none', async () => {
     const fix = await create('needed', 'fix CVE-123')
     const notes = await create('needed', 'update the changelog')

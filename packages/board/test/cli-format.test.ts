@@ -83,7 +83,7 @@ describe('tasks', () => {
   const at = (ms: number) => new Date(now + ms).toISOString()
   const holder = 'vercel:user:j+claude'
   const task = (about: Partial<TaskView>): TaskView =>
-    ({ state: 'ready', owner: by.principal, for: null, needs: [], epoch: 1, claim: null, blocked: null, result: null, reason: null, ...about }) as unknown as TaskView
+    ({ state: 'ready', owner: by.principal, for: null, needs: [], epoch: 1, claim: null, blocked: null, result: null, reason: null, notBefore: null, ...about }) as unknown as TaskView
   const root = (text: string, about: Partial<TaskView>, labels: Record<string, string> = {}) =>
     ({
       id: 812, channel: 'work', text, re: null, labels: { ...labels, 'board.task': about.state ?? 'ready' }, reactions: {}, by, from: null,
@@ -123,6 +123,28 @@ describe('tasks', () => {
     expect(failed).toHaveLength(80)
   })
 
+  it('say how long until a task that waits for a time may start, while that time is ahead, on its row and under its root', () => {
+    const rows = formatTasks(
+      [
+        { message: root('rotate the deploy keys', { state: 'waiting', notBefore: at(2 * 86_400_000 + 60_000) }, { step: 'ops' }), replies: 0, last: null },
+        { message: { ...root('renew the cert', { state: 'waiting', needs: ['810'], notBefore: at(3 * 3_600_000) }), id: '813' }, replies: 0, last: null },
+        // Its time has come, so what it waits for now is what it needs, and a ready one's passed time says nothing.
+        { message: { ...root('ship it', { state: 'waiting', needs: ['810'], notBefore: at(-60_000) }), id: '814' }, replies: 0, last: null },
+        { message: { ...root('deploy it', { notBefore: at(-86_400_000) }), id: '815' }, replies: 0, last: null },
+      ],
+      now,
+    ).split('\n')
+    expect(rows).toEqual([
+      `#812  waiting    ${'rotate the deploy keys'.padEnd(30)}  step=ops  starts in 2d`,
+      `#813  waiting    ${'renew the cert'.padEnd(30)}  needs #810  starts in 3h`,
+      `#814  waiting    ${'ship it'.padEnd(30)}  needs #810`,
+      `#815  ready      deploy it`,
+    ])
+    expect(row({ state: 'waiting', notBefore: at(45 * 60_000) })).toBe('      task  waiting · starts in 45m')
+    expect(row({ state: 'waiting', needs: ['810'], notBefore: at(2 * 3_600_000) })).toBe('      task  waiting · needs #810 · starts in 2h')
+    expect(row({ notBefore: at(-60_000) })).toBe('      task  ready')
+  })
+
   it('print what the board did to one on its own, and a renewal for whoever follows receipts', () => {
     const message = root('fix CVE-123 in acme/web', { state: 'ready' })
     const actor = { id: holder, kind: 'profile', handle: 'julian/claude', name: 'claude', avatar: null, via: { name: 'julian', environment: null } }
@@ -133,6 +155,11 @@ describe('tasks', () => {
     // What a task waits for, changed: the ones it waits for now, or that it waits for nothing.
     expect(formatEvent(event('task.needs_changed', { id: '812', needs: ['810', '811'] }, actor))).toBe('#812  work  task needs #810 #811 by claude via julian')
     expect(formatEvent(event('task.needs_changed', { id: '812', needs: [] }, actor))).toBe('#812  work  task needs nothing by claude via julian')
+    // When it may start, as it's made and changed: the time, to the minute when that's all it has, or that it has none.
+    expect(formatEvent(event('task.created', { id: '812', needs: [], for: null, notBefore: '2026-11-30T09:00:00.000Z' }, actor))).toBe('#812  work  task created by claude via julian · waits until 2026-11-30T09:00Z')
+    expect(formatEvent(event('task.not_before_changed', { id: '812', notBefore: '2026-11-30T09:00:00.000Z' }, actor))).toBe('#812  work  task waits until 2026-11-30T09:00Z by claude via julian')
+    expect(formatEvent(event('task.not_before_changed', { id: '812', notBefore: '2026-11-30T09:00:30.000Z' }, actor))).toBe('#812  work  task waits until 2026-11-30T09:00:30.000Z by claude via julian')
+    expect(formatEvent(event('task.not_before_changed', { id: '812', notBefore: null }, actor))).toBe('#812  work  task waits for no time by claude via julian')
   })
 })
 

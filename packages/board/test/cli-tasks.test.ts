@@ -286,7 +286,7 @@ describe('vb tasks', () => {
 
     const after = await create('plain', 'after it', ['--needs', plain])
     const waiting = await vb(['tasks', 'claim', after])
-    expect(waiting.stderr).toMatch(new RegExp(`^error: Can't claim task #${after}\\. It waits for other tasks\\.\\n  [^\\n]+\\n\\n  See what it waits for:\\n    vb read ${after}\\n$`))
+    expect(waiting.stderr).toMatch(new RegExp(`^error: Can't claim task #${after}\\. It waits for other tasks, or a time\\.\\n  [^\\n]+\\n\\n  See what it waits for:\\n    vb read ${after}\\n$`))
   }, 60_000)
 
   it("names the tasks command for a change someone tried to make by labeling board.task", async () => {
@@ -376,6 +376,10 @@ describe('vb tasks', () => {
     // What it waits for, changed by its owner: for another task now, then for nothing.
     await ok(['tasks', 'needs', third, second, first])
     await ok(['tasks', 'needs', third, '--none'])
+    // When it may start, set by its owner when it's made and after.
+    const fourth = await create('shown', 'rotate the keys', ['--not-before', '2099-11-30T09:00Z'])
+    await ok(['tasks', 'not-before', fourth, '2099-12-01T09:30Z'])
+    await ok(['tasks', 'not-before', fourth, '--none'])
 
     const lines = [
       `#${first}  shown  task created by u_julian`,
@@ -399,6 +403,9 @@ describe('vb tasks', () => {
       `#${third}  shown  task reopened by u_julian`,
       `#${third}  shown  task needs #${second} #${first} by u_julian`,
       `#${third}  shown  task needs nothing by u_julian`,
+      `#${fourth}  shown  task created by u_julian · waits until 2099-11-30T09:00Z`,
+      `#${fourth}  shown  task waits until 2099-12-01T09:30Z by u_julian`,
+      `#${fourth}  shown  task waits for no time by u_julian`,
     ]
     await until(() => tail.printed.stdout.includes(lines.at(-1)!), 'tail to print the last of them')
     tail.child.kill('SIGINT')

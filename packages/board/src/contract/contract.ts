@@ -256,15 +256,19 @@ export type ScheduleEvent = ContractEvent<ScheduleEvents>
 export const SCHEDULES_SESSION = 'schedules'
 
 /**
- * A claim's lease timers, outside the board log: one session, `leases`. Each claim and renewal arms
- * one for when its lease runs out, carrying `lease.due`. Timers can't be revoked, so one for a claim
- * that's over, or renewed since, fires into a no-op: the board log holds only a real `task.expired`.
+ * A task's timers, outside the board log: one session, `leases`. Each claim and renewal arms one
+ * for when its lease runs out, carrying `lease.due`, and each not-before time one for when it comes,
+ * carrying `not_before.due`. Timers can't be revoked, so one for a claim that's over, or renewed
+ * since, or for a time a task no longer has, fires into a no-op: the board log holds only a real
+ * `task.expired` or `task.ready`.
  */
 export const leasesContract = contract({
   name: 'board-leases',
   events: {
     /** (server) A timer: task `id`'s claim at `epoch` was to run out at `at`. */
     'lease.due': z.object({ id: MessageId, epoch: z.number().int().positive(), at: Millis }),
+    /** (server) A timer: task `id` was to wait until `at`, its not-before time. */
+    'not_before.due': z.object({ id: MessageId, at: Millis }),
   },
 })
 
