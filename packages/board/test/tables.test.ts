@@ -121,7 +121,11 @@ function history(seed: number, length: number): BoardEvent[] {
         else if (kind === 'unblocked') push('task.unblocked', { ...about, by: author })
         else if (kind === 'canceled') push('task.canceled', { ...about, reason: text(), by: author })
         else if (kind === 'reopened') push('task.reopened', { ...about, by: author })
-        else push('task.assigned', { ...about, for: r.pick(AUTHORS).actor, by: author })
+        else {
+          push('task.assigned', { ...about, for: r.pick(AUTHORS).actor, by: author })
+          // A date, with no draw of its own: the history stays the one its seed makes.
+          push('task.due_changed', { ...about, due: events.length % 2 ? null : until, by: author })
+        }
       }
       const roots = posted.filter((p) => p.re === null)
       const known = roots.filter((p) => tasks.has(p.id))
@@ -139,7 +143,7 @@ function history(seed: number, length: number): BoardEvent[] {
         }
         if (!task) {
           const needs = others.length && r.chance(0.3) ? [r.pick(others).id] : []
-          push('task.created', { ...about, needs, for: r.chance(0.2) ? r.pick(AUTHORS).actor : null, by: author })
+          push('task.created', { ...about, needs, for: r.chance(0.2) ? r.pick(AUTHORS).actor : null, ...(root.id % 3 === 0 ? { due: until } : {}), by: author })
           tasks.set(root.id, { state: needs.length ? 'waiting' : 'ready', epoch: 0 })
         } else if (task.state === 'waiting') {
           const kind = r.pick(['ready', 'ready', 'blocked', 'canceled', 'needs'] as const)
@@ -152,7 +156,10 @@ function history(seed: number, length: number): BoardEvent[] {
           if (kind === 'claimed') push('task.claimed', { ...about, epoch: ++task.epoch, until, token: 'a'.repeat(64), by: author })
           else if (kind === 'blocked') push('task.blocked', { ...about, kind: null, reason: text(), by: author })
           else if (kind === 'canceled') push('task.canceled', { ...about, reason: text(), by: author })
-          else if (kind === 'assigned') push('task.assigned', { ...about, for: r.chance(0.5) ? r.pick(AUTHORS).actor : null, by: author })
+          else if (kind === 'assigned') {
+            push('task.assigned', { ...about, for: r.chance(0.5) ? r.pick(AUTHORS).actor : null, by: author })
+            push('task.due_changed', { ...about, due: events.length % 2 ? null : until, by: author })
+          }
           if (kind === 'needs') task.state = rewire()
           else if (kind !== 'assigned') task.state = kind
         } else if (task.state === 'claimed') {

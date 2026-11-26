@@ -1401,6 +1401,32 @@ const CHECKS: Check[] = [
   },
   {
     group: 'tasks',
+    name: 'dates a task when it is made and after, whoever holds it, and lists the open ones past their date',
+    run: async (ctx) => {
+      // Whole seconds, a day either side of now: what any board keeps of a time.
+      const day = (days: number) => new Date(Math.floor(Date.now() / 1000) * 1000 + days * 86_400_000).toISOString()
+      const { task: root } = await task(ctx, 'conformance: a task with a due date', { due: day(1) })
+      same(root.task?.due, day(1), "a new task's due date")
+      const { task: late } = await task(ctx, 'conformance: a task past its due date', { due: day(-1) })
+      const { task: plain } = await task(ctx, 'conformance: a task with no due date')
+      same(plain.task?.due, null, "the due date of a task made without one")
+      const overdue = (await ctx.board.tasks.list({ channel: ctx.channel, label: ctx.labels, overdue: true })).tasks.map((listed) => listed.message.id)
+      check(overdue.includes(late.id), `the tasks past their due date should include ${late.id}, got ${show(overdue)}`)
+      check(!overdue.includes(root.id) && !overdue.includes(plain.id), `the tasks past their due date should leave out ${root.id} and ${plain.id}, got ${show(overdue)}`)
+      // Its owner changes it, and takes it off, whoever holds the task: the claim stays.
+      same((await ctx.board.tasks.due(root.id, day(2))).task?.due, day(2), 'the due date, changed')
+      const claim = await ctx.board.tasks.claim(root.id, { lease: 60 })
+      const off = await ctx.board.tasks.due(root.id, null)
+      same(off.task?.due, null, "a claimed task's due date, taken off")
+      same(off.task?.state, 'claimed', 'the claimed task, once its due date changed')
+      // A finished task's stays as it was.
+      await claim.complete()
+      await rejects(ctx.board.tasks.due(root.id, day(3)), 409, 'task_finished', "changing a completed task's due date")
+      same((await ctx.board.thread(root.id)).message.task?.due, null, "the completed task's due date, after the refused change")
+    },
+  },
+  {
+    group: 'tasks',
     name: 'makes several tasks in one write, in the order given: each waits for the ones it names, of the batch or there already, and an id makes them once',
     run: async (ctx) => {
       const { task: done } = await task(ctx, 'conformance: a prerequisite that has completed')

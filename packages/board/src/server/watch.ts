@@ -32,6 +32,7 @@ const WATCHED = [
   'task.created',
   'task.assigned',
   'task.needs_changed',
+  'task.due_changed',
   'task.ready',
   'task.claimed',
   'task.renewed',

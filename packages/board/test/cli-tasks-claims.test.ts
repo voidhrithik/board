@@ -182,6 +182,48 @@ describe("vb tasks, with the claim it keeps", () => {
     expect((await vb(['tasks', 'assign', id, 'fixer', '--pool'])).code).toBe(2)
   }, 60_000)
 
+  it('dates a task when it is made and later, lists the late ones, and says how late each is', async () => {
+    const soon = await create('dated', 'rotate the deploy keys', ['--due', '2099-12-01T17:00Z'])
+    const late = await create('dated', 'renew the cert', ['--due', '2020-01-01T09:00:00+01:00'])
+    await create('dated', 'whenever')
+    expect((await task(soon)).task).toMatchObject({ state: 'ready', due: '2099-12-01T17:00:00.000Z' })
+    expect((await task(late)).task!.due).toBe('2020-01-01T08:00:00.000Z')
+    // A time as Date reads it: anything else is refused before it's sent.
+    const bad = await vb(['tasks', 'create', 'dated', 'when?', '--due', 'someday'])
+    expect([bad.code, bad.stderr.split('\n')[0]]).toEqual([2, "error: --due takes a time like 2026-10-08T09:00:00Z, and someday isn't one."])
+
+    // Each row says how long until it's due, or how late it is.
+    const rows = (await ok(['tasks', 'dated'])).trimEnd().split('\n').map((line) => line.split(/ {2,}/))
+    expect(rows.map((row) => row[0])).toEqual([`#${soon}`, `#${late}`, expect.any(String)])
+    expect(rows[0]![3]).toMatch(/^due in \d+d$/)
+    expect(rows[1]![3]).toMatch(/^\d+d late$/)
+    expect(rows[2]![3]).toBeUndefined()
+    expect((await ok(['tasks', 'dated', '--overdue'])).trimEnd().split('\n').map((line) => line.split(/ {2,}/)[0])).toEqual([`#${late}`])
+    expect(await ok(['tasks', 'dated', '--overdue', '--state', 'completed'])).toBe('no completed tasks past their due date in dated\n')
+    expect(await ok(['read', late])).toMatch(/\n {6}task {2}ready · \d+d late\n$/)
+
+    // Its owner changes it, to another time or to none.
+    expect(await ok(['tasks', 'due', soon, '2099-12-02T09:30:00+01:00'])).toBe(`${soon} is due 2099-12-02T08:30Z\n`)
+    expect(await ok(['tasks', 'due', soon, '--none'])).toBe(`${soon} has no due date\n`)
+    expect((await task(soon)).task!.due).toBeNull()
+    const json = JSON.parse(await ok(['tasks', 'due', soon, '2099-12-01T17:00Z', '--json'])) as { task: MessageView; outcome: string }
+    expect(Object.keys(json).sort()).toEqual(['outcome', 'task'])
+    expect(json).toMatchObject({ outcome: 'set', task: { id: soon, task: { due: '2099-12-01T17:00:00.000Z' } } })
+    // Nothing is said, not left out, and both is one too many.
+    const bare = await vb(['tasks', 'due', soon])
+    expect([bare.code, bare.stderr.split('\n')[0]]).toEqual([2, 'error: Missing when it is due, such as 2026-12-01T17:00Z, or --none for no time.'])
+    const both = await vb(['tasks', 'due', soon, '2099-12-01T17:00Z', '--none'])
+    expect([both.code, both.stderr.split('\n')[0]]).toEqual([2, `error: A time is when #${soon} is due, and --none is no time: pass one of them.`])
+    // It's its owner's to change, and a finished task's stays as it was.
+    const theirs = await vb(['tasks', 'due', soon, '--none'], await deployment())
+    expect([theirs.code, theirs.stderr.split('\n')[0]]).toEqual([1, `error: You can't change when task #${soon} is due. It's someone else's.`])
+    await ok(['tasks', 'claim', late])
+    await ok(['tasks', 'complete', late, 'renewed'])
+    const done = await vb(['tasks', 'due', late, '--none'])
+    expect([done.code, done.stderr.split('\n')[0]]).toEqual([1, `error: Can't change when task #${late} is due. It's finished.`])
+    expect((await task(late)).task!.due).toBe('2020-01-01T08:00:00.000Z')
+  }, 60_000)
+
   it('sets what a task waits for, in place of what it waited for, and nothing with --none', async () => {
     const fix = await create('needed', 'fix CVE-123')
     const notes = await create('needed', 'update the changelog')

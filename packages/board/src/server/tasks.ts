@@ -86,6 +86,11 @@ const finished = (task: Task) => task.state === 'completed' || task.state === 'f
 /** How many tasks a change of what a task needs walks, behind the ones it adds, to see that none waits for it. */
 export const NEEDS_WALK_MAX = 500
 
+/** When a task is due, as the board keeps it: in UTC, or null for no time. */
+const dueAt = (due: string | null | undefined): string | null => (due ? new Date(due).toISOString() : null)
+/** What `task.created` says of when a task is due: nothing for no time, as a task made before due dates says. */
+const dated = (due: string | null) => (due === null ? {} : { due })
+
 /** Whether `value` is shaped like an ID, `<where it's from>:<who>`, as every principal's and actor's is. What it names is a credential's to say, never a client's. */
 const isId = (value: string) => /^[^\s:]+:\S+$/.test(value)
 
@@ -499,10 +504,11 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
      */
     starting(
       identity: Identity,
-      input: { channel: string; needs?: string[] | undefined; for?: string | null | undefined; claim?: boolean | undefined; lease?: number | undefined; token?: string | undefined },
+      input: { channel: string; needs?: string[] | undefined; for?: string | null | undefined; due?: string | null | undefined; claim?: boolean | undefined; lease?: number | undefined; token?: string | undefined },
     ): { along: Along; claimed: (id: number) => Promise<TaskClaim | null> } {
       const { principal, actor, author } = identity
       const assigned = ownActor(principal.id, input.for)
+      const due = dueAt(input.due)
       // Claiming is what `label` gives, on a task made in the same write as on any other.
       if (input.claim) authorize(principal.access, 'label', input.channel)
       const token = input.token ?? newToken()
@@ -516,7 +522,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
           position,
           events: (root) => {
             const about = { id: root.id, thread: root.thread }
-            const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, by: author } }]
+            const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, ...dated(due), by: author } }]
             if (needs.ids.length > 0 && !waits) events.push({ type: 'task.ready', payload: about })
             if (input.claim) events.push(...claiming(root, null, identity, input.lease, token).events)
             return events
@@ -541,9 +547,10 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
      * those are new, so it waits. Refused before anything is read: an assignee that isn't its
      * owner's, a `key` two tasks have or none has, and tasks that wait for each other.
      */
-    startingMany(identity: Identity, tasks: readonly { key?: string | undefined; needs?: readonly BatchNeed[] | undefined; for?: string | null | undefined }[]): AlongEach {
+    startingMany(identity: Identity, tasks: readonly { key?: string | undefined; needs?: readonly BatchNeed[] | undefined; for?: string | null | undefined; due?: string | null | undefined }[]): AlongEach {
       const { principal, author } = identity
       const assigned = tasks.map((task) => ownActor(principal.id, task.for))
+      const due = tasks.map((task) => dueAt(task.due))
       const plan = batchPlan(tasks)
       if ('problem' in plan) throw badRequest(`needs: ${plan.problem}`, 'invalid_needs')
       const { inside } = plan
@@ -562,7 +569,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
             roots.map((root, at): Events => {
               const about = { id: root.id, thread: root.thread }
               const waitsFor = [...needs[at]!.ids, ...inside[at]!.map((other) => roots[other]!.id)]
-              return [{ type: 'task.created', payload: { ...about, needs: waitsFor, for: assigned[at]!, by: author } }, ...(readied[at] ? [{ type: 'task.ready' as const, payload: about }] : [])]
+              return [{ type: 'task.created', payload: { ...about, needs: waitsFor, for: assigned[at]!, ...dated(due[at]!), by: author } }, ...(readied[at] ? [{ type: 'task.ready' as const, payload: about }] : [])]
             }),
         }
       }
@@ -572,10 +579,11 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
      * Makes the thread rooted at `id` a task, as it is: `label` in its channel, and the caller's
      * principal owns it. A reply names no task, and neither does a root that's gone.
      */
-    async adopt(identity: Identity, id: number, input: { needs?: string[] | undefined; for?: string | null | undefined; claim?: boolean | undefined; lease?: number | undefined; token?: string | undefined }): Promise<{ task: MessageView; claim?: TaskClaim }> {
+    async adopt(identity: Identity, id: number, input: { needs?: string[] | undefined; for?: string | null | undefined; due?: string | null | undefined; claim?: boolean | undefined; lease?: number | undefined; token?: string | undefined }): Promise<{ task: MessageView; claim?: TaskClaim }> {
       const { principal, actor, author } = identity
       await authorizeMessage(writes(), principal.access, 'label', id)
       const assigned = ownActor(principal.id, input.for)
+      const due = dueAt(input.due)
       const token = input.token ?? newToken()
       const made: { claim: TaskClaim | null } = { claim: null }
       const root = await change(identity, id, async (found, position) => {
@@ -588,7 +596,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         if (input.claim && waits) throw conflict('task_waiting', `#${id} would wait for ${needs.ids.map((need) => `#${need}`).join(', ')}: it wasn't made a task`)
         if (input.claim && assigned !== null && assigned !== actor.id) throw conflict('task_assigned', `#${id} would be assigned to ${assigned}: it wasn't made a task`)
         const about = { id, thread: found.thread }
-        const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, by: author } }]
+        const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, ...dated(due), by: author } }]
         if (needs.ids.length > 0 && !waits) events.push({ type: 'task.ready', payload: about })
         if (input.claim) {
           const claimed = claiming(found, null, identity, input.lease, token)
@@ -619,6 +627,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       const now = Date.now()
       const matches = ({ task }: Root) =>
         (wanted === 'all' || wanted === 'open' || stateNow(task, now) === wanted) &&
+        (!query.overdue || (task.due !== null && Date.parse(task.due) < now)) &&
         (owners === null || owners.has(task.owner)) &&
         (assignees === null || (task.for !== null && assignees.has(task.for))) &&
         (needed === null || task.needs.includes(needed))
@@ -805,6 +814,17 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
           { type: 'task.needs_changed', payload: { ...about, needs: needs.ids, by: identity.author } },
           ...(needs.ids.length > 0 && needs.completed && task.state !== 'blocked' ? [{ type: 'task.ready' as const, payload: about }] : []),
         ]
+      })
+      return { task: await shown(identity, root) }
+    },
+
+    /** Changes when a task is due, for its owner or `manage`, while it isn't finished, whoever holds it: a claim was taken on what it says, not on when. */
+    async due(identity: Identity, id: number, due: string | null): Promise<{ task: MessageView }> {
+      owns(identity, await taskOf(identity.principal.access, id))
+      const when = dueAt(due)
+      const root = await changeTask(identity, id, (found) => {
+        if (finished(found.task)) throw conflict('task_finished', `#${id} is ${found.task.state}`)
+        return found.task.due === when ? [] : [{ type: 'task.due_changed', payload: { id, thread: found.thread, due: when, by: identity.author } }]
       })
       return { task: await shown(identity, root) }
     },

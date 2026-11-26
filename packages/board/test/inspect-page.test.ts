@@ -38,7 +38,7 @@ const taskRoot = (body: { channel: string; text: string; needs?: string[] }): Me
     attachments: [],
     links: [],
     author: null,
-    task: { state: 'waiting', owner: 'local:user:julian', by: 'local:user:julian', for: null, needs: body.needs ?? [], epoch: 0, claim: null, blocked: null, result: null, reason: null },
+    task: { state: 'waiting', owner: 'local:user:julian', by: 'local:user:julian', for: null, needs: body.needs ?? [], epoch: 0, claim: null, blocked: null, result: null, reason: null, due: null },
   }) as MessageView
 
 const usual: Record<string, (body: unknown) => Response> = {

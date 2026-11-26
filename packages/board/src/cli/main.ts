@@ -22,7 +22,7 @@ import { explainPrincipalOf, explanationLine, GrantMisuse, grantCanOf, KINDS, pa
 import { formatSchema, formatSchemas } from './schemas.ts'
 import { parseSchemaId } from '../contract/data-schemas.ts'
 import { block } from '../contract/blocks.ts'
-import { actorName, claimLine, formatAccess, formatConformance, formatEvent, formatGrants, grantRow, formatSchedule, formatTasks, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, terminalText, who } from './format.ts'
+import { actorName, claimLine, formatAccess, formatConformance, formatEvent, formatGrants, grantRow, formatSchedule, formatTasks, mentionedIn, reactionNames, formatSourceRead, formatSynced, formatThreadSummaries, formatThreads, shortTime, terminalText, who } from './format.ts'
 import { fileClaims, memoryClaims, tokenClaims, type Claims } from './claims.ts'
 import { runCommand } from './run.ts'
 import { AGENTS, allowRules, cliOf, disallow, installedHook, tilde, uninstallHook, type HookAgent } from './hooks.ts'
@@ -897,6 +897,7 @@ function doing(): string {
       if (a === 'create') return b !== undefined && isMessageRef(b) ? `make ${ref(b)} a task` : `create a task in ${b ?? 'a channel'}`
       if (a === 'renew') return `renew the claim on ${one}`
       if (a === 'needs') return `change what ${one} needs`
+      if (a === 'due') return `change when ${one} is due`
       return `${a} ${one}`
     }
     case 'grants':
@@ -2195,7 +2196,7 @@ function unknownCommand(command: string): Failed {
 }
 
 /** What `tasks` does to a task, by the word after it: any other word is a channel to list. */
-const TASK_VERBS = new Set(['create', 'claim', 'run', 'renew', 'release', 'complete', 'fail', 'block', 'unblock', 'reopen', 'assign', 'needs', 'cancel'])
+const TASK_VERBS = new Set(['create', 'claim', 'run', 'renew', 'release', 'complete', 'fail', 'block', 'unblock', 'reopen', 'assign', 'needs', 'due', 'cancel'])
 const TASK_STATES = ['waiting', 'ready', 'claimed', 'blocked', 'completed', 'failed', 'canceled']
 
 /** A task's ID as you'd write it: `#812` or `812`. */
@@ -2260,7 +2261,7 @@ async function createPlan(target: string, text: string | undefined, path: string
 }
 
 /** What a task of a plan's `--file` takes, as `tasks.createMany` does. */
-const PLAN_KEYS = ['key', 'text', 'labels', 'needs', 'for', 'noSync', 'attachments']
+const PLAN_KEYS = ['key', 'text', 'labels', 'needs', 'for', 'due', 'noSync', 'attachments']
 
 /** The help page that says what a plan holds. */
 const planHelp = (): Recovery => ({ instruction: 'See what a plan takes', argv: [...cli(), 'tasks', 'create', '--help'] })
@@ -2555,6 +2556,7 @@ async function tasks(args: string[]): Promise<number> {
       ...(flags.label?.length ? { label: flags.label } : {}),
       ...(flags.by ? { by: flags.by.replace(/^@/, '') } : {}),
       ...(flags.for ? { for: profileActor((await board.me()).principal, flags.for) } : {}),
+      ...(flags.overdue ? { overdue: true } : {}),
       ...(flags.after !== undefined ? { after: flags.after.replace(/^#/, '') } : {}),
       limit,
     })
@@ -2578,7 +2580,7 @@ async function tasks(args: string[]): Promise<number> {
     if (flags.json) return result(page), 0
     if (page.tasks.length === 0) {
       const which = state === undefined || state === 'open' ? 'open ' : state === 'all' ? '' : `${state} `
-      return out(`no ${which}tasks${verb ? ` in ${verb}` : ''}`), 0
+      return out(`no ${which}tasks${flags.overdue ? ' past their due date' : ''}${verb ? ` in ${verb}` : ''}`), 0
     }
     out(formatTasks(page.tasks))
     // A full page may not be all of them: where the next one starts.
@@ -2598,6 +2600,7 @@ async function tasks(args: string[]): Promise<number> {
     const about = {
       ...(flags.needs?.length ? { needs: flags.needs.map((id) => taskId(id)) } : {}),
       ...(flags.for ? { for: profileActor((await board.me()).principal, flags.for) } : {}),
+      ...(flags.due ? { due: instant('due', flags.due) } : {}),
       ...(claimFlag() ? { claim: true } : {}),
       ...(lease !== undefined ? { lease } : {}),
       ...(claimFlag() && io.claimToken !== undefined ? { token: io.claimToken } : {}),
@@ -2798,6 +2801,17 @@ async function tasks(args: string[]): Promise<number> {
       const now = task.task?.needs ?? []
       if (flags.json) result({ task, outcome: 'set' })
       else out(`${messageRef(id)} needs ${now.length ? now.map((need) => ref(need)).join(' ') : 'nothing'}`)
+      return 0
+    }
+    case 'due': {
+      const [, when, extra] = rest
+      if (extra !== undefined) throw usage(`tasks due takes a task and a time: ${extra} is one too many.`)
+      if (flags.none && when !== undefined) throw usage(`A time is when ${ref(id)} is due, and --none is no time: pass one of them.`)
+      if (!flags.none && when === undefined) throw usage('Missing when it is due, such as 2026-12-01T17:00Z, or --none for no time.', { reason: 'missing_arguments' })
+      const task = await board.tasks.due(id, when === undefined ? null : instant('due', when))
+      const due = task.task?.due ?? null
+      if (flags.json) result({ task, outcome: 'set' })
+      else out(due ? `${messageRef(id)} is due ${shortTime(due)}` : `${messageRef(id)} has no due date`)
       return 0
     }
     default: {

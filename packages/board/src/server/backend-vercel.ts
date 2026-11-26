@@ -62,6 +62,8 @@ type ApiTask = {
   blocked: { kind: string | null; reason: string } | null
   result: string | null
   reason: string | null
+  /** When it's due, in milliseconds. An API from before due dates sends none. */
+  due?: number | null
 }
 /** A schema version in the team's registry: a built-in's `createdAt` is 0, and it has no `createdBy`. */
 type ApiSchema = { id: string; name: string; version: number; description?: string; schema: Record<string, unknown>; builtIn: boolean; createdAt: number; createdBy?: ApiActor }
@@ -314,7 +316,7 @@ const SANDBOX_TASK_ROUTES: readonly SandboxRoute[] = [
   { method: 'POST', path: '/tasks' },
   { method: 'POST', path: '/tasks/batch' },
   { method: 'POST', path: '/tasks/claim' },
-  ...['claim', 'renew', 'release', 'complete', 'fail', 'block', 'unblock', 'reopen', 'assign', 'needs', 'cancel'].map((change) => ({ method: 'POST', path: `/tasks/:task/${change}` })),
+  ...['claim', 'renew', 'release', 'complete', 'fail', 'block', 'unblock', 'reopen', 'assign', 'needs', 'due', 'cancel'].map((change) => ({ method: 'POST', path: `/tasks/:task/${change}` })),
 ]
 
 /**
@@ -533,6 +535,7 @@ const TASK_EVENTS: Record<string, BoardEventView['type']> = {
   'task.made': 'task.created',
   'task.assigned': 'task.assigned',
   'task.needs_changed': 'task.needs_changed',
+  'task.due_changed': 'task.due_changed',
   'task.ready': 'task.ready',
   'task.claimed': 'task.claimed',
   'task.renewed': 'task.renewed',
@@ -1566,6 +1569,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     blocked: task.blocked ? { kind: task.blocked.kind, reason: task.blocked.reason } : null,
     result: task.result,
     reason: task.reason,
+    due: task.due ? iso(task.due) : null,
   })
 
   async function view(who: Who, message: ApiMessage, channel: string): Promise<MessageView> {
@@ -2961,9 +2965,10 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
    * What makes a thread a task, as the API takes it: the token is this backend's, for a claim made in the same write.
    * Whom it's for is the API's to check, one of its owner's profiles, as on any board.
    */
-  const taskSpec = (input: { needs?: string[] | undefined; for?: string | null | undefined; claim?: boolean | undefined; lease?: number | undefined }, token: string | null) => ({
+  const taskSpec = (input: { needs?: string[] | undefined; for?: string | null | undefined; due?: string | null | undefined; claim?: boolean | undefined; lease?: number | undefined }, token: string | null) => ({
     ...(input.needs?.length ? { needs: needsOf(input.needs) } : {}),
     ...(input.for ? { for: input.for } : {}),
+    ...(input.due ? { due: Date.parse(input.due) } : {}),
     ...(token ? { claim: { claimToken: token, leaseSeconds: input.lease ?? LEASE_DEFAULT_S } } : {}),
   })
 
@@ -2972,7 +2977,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
    * is what was asked for. It waits when it names tasks to wait for, which the API checked, and no one holds it: a
    * claim takes `label`, which reads.
    */
-  const askedTask = (owner: string, by: string, input: { needs?: string[] | undefined; for?: string | null | undefined }): ApiTask => ({
+  const askedTask = (owner: string, by: string, input: { needs?: string[] | undefined; for?: string | null | undefined; due?: string | null | undefined }): ApiTask => ({
     state: input.needs?.length ? 'waiting' : 'ready',
     owner,
     by,
@@ -2983,6 +2988,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     blocked: null,
     result: null,
     reason: null,
+    due: input.due ? Date.parse(input.due) : null,
   })
 
   /** Who a handle or an ID names, as IDs: an ID names itself, whether or not the board has seen it write. */
@@ -3042,13 +3048,16 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
     let payload: Record<string, unknown>
     switch (type) {
       case 'task.created':
-        payload = { ...base, needs: message.task!.needs, for: task.for, by }
+        payload = { ...base, needs: message.task!.needs, for: task.for, ...(message.task!.due ? { due: message.task!.due } : {}), by }
         break
       case 'task.assigned':
         payload = { ...base, for: task.for, by }
         break
       case 'task.needs_changed':
         payload = { ...base, needs: message.task!.needs, by }
+        break
+      case 'task.due_changed':
+        payload = { ...base, due: message.task!.due, by }
         break
       case 'task.claimed':
       case 'task.renewed':
@@ -3587,6 +3596,8 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
         if (owners && !owners.has(task.owner)) return false
         if (assignees && !(task.for !== null && assignees.has(task.for))) return false
         if (by && !by(task.message.createdBy)) return false
+        // When it's late is the board's clock's to say, as on any board.
+        if (query.overdue && !(task.due && task.due < Date.now())) return false
         const wears = task.message.labels
         return labels.every(([key, values]) => wears !== undefined && Object.hasOwn(wears, key) && (values === null || values.includes(wears[key]!)))
       }
@@ -3693,6 +3704,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
           ...(task.attachments?.length ? { attachments: task.attachments } : {}),
           ...(needs.length ? { needs } : {}),
           ...(task.for ? { for: task.for } : {}),
+          ...(task.due ? { due: Date.parse(task.due) } : {}),
         }
       })
       // The batch's `id` is its caller's own key for it: the API answers the key again, with the same request, with the
@@ -3716,7 +3728,7 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
             const asked = input.tasks[at]!
             const needs = [...waits[at]!.threads, ...waits[at]!.keys.map((key) => threads[places.get(key)!]!)]
             const { actor } = await self(who)
-            const stood: ApiTask = { state: needs.length ? 'waiting' : 'ready', owner: principalId(actor), by: await actorOf(who), for: asked.for ?? null, needs, epoch: 0, claim: null, blocked: null, result: null, reason: null }
+            const stood: ApiTask = { state: needs.length ? 'waiting' : 'ready', owner: principalId(actor), by: await actorOf(who), for: asked.for ?? null, needs, epoch: 0, claim: null, blocked: null, result: null, reason: null, due: asked.due ? Date.parse(asked.due) : null }
             const first = { id: idAt(task.id, 1), threadId: task.id, sequence: 1 }
             return view(who, { ...(await sent(who, first, { text: asked.text, labels: { ...asked.labels, [TASK_LABEL]: stood.state }, attachments: asked.attachments, noSync: asked.noSync })), task: stood }, input.channel)
           }),
@@ -3820,6 +3832,10 @@ export function createVercel(options: VercelOptions, environment: VercelEnvironm
       const who = whoOf(caller)
       // What it waits for now, by their threads: the API checks each, and that none waits for this one.
       return { task: await rootOf(who, await taskWrite(who, `${await taskPath(who, id, signal)}/needs`, { needs: needsOf(needs) }, { id, signal })) }
+    },
+    async setTaskDue(caller, { id, due }, signal) {
+      const who = whoOf(caller)
+      return { task: await rootOf(who, await taskWrite(who, `${await taskPath(who, id, signal)}/due`, { due: due ? Date.parse(due) : null }, { id, signal })) }
     },
     async cancelTask(caller, { id, reason }, signal) {
       const who = whoOf(caller)

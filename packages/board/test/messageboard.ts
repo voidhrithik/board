@@ -87,6 +87,8 @@ type Task = {
   blocked: { kind: string | null; reason: string } | null
   result: string | null
   reason: string | null
+  /** When it's due, in milliseconds, or null for no time. */
+  due: number | null
   /** Who completed it, and when: a dependent readied later is readied in their name. No answer shows it. */
   completed?: { by: Actor; at: number }
   /** It completed with tasks waiting for it that haven't all been readied: whoever sees it goes on. No answer shows it. */
@@ -805,7 +807,7 @@ function fakeBoard(shared: Shared, boardId: string) {
   const batchDigest = (body: Record<string, any>) =>
     JSON.stringify([
       body.channelId !== undefined ? { id: body.channelId } : { name: body.channel },
-      (body.tasks as Record<string, any>[]).map((task) => [task.key ?? null, task.text, Object.entries(task.labels ?? {}).sort(([a], [b]) => (a < b ? -1 : 1)), task.noSync ?? false, task.attachments ?? [], task.needs ?? [], task.for ?? null]),
+      (body.tasks as Record<string, any>[]).map((task) => [task.key ?? null, task.text, Object.entries(task.labels ?? {}).sort(([a], [b]) => (a < b ? -1 : 1)), task.noSync ?? false, task.attachments ?? [], task.needs ?? [], task.for ?? null, task.due ?? null]),
     ])
   /** A profile's name, as an actor ID ends with one. */
   const PROFILE_PART = /^[a-z0-9][a-z0-9-]{0,31}$/
@@ -973,9 +975,16 @@ function fakeBoard(shared: Shared, boardId: string) {
     }
   }
 
+  /** When a task is due, as a body says it: milliseconds, or null or nothing for no time. */
+  function checkedDue(due: unknown): number | null {
+    if (due === undefined || due === null) return null
+    if (!Number.isInteger(due) || (due as number) < 0) throw bad('due is a time in milliseconds, or null.')
+    return due as number
+  }
   function checkedTask(actor: Actor, channel: string, spec: Record<string, any>, self: string | null) {
     const owner = principalId(actor.principal)
     const needs = checkedNeeds(actor, spec.needs ?? [], self)
+    const due = checkedDue(spec.due)
     const assigned: unknown = spec.for ?? null
     if (assigned !== null && !profileOf(owner, assigned)) throw new Refused(400, 'invalid_for', "A task is assigned to one of its owner's profiles.")
     const waits = needs.some((id) => threads.get(id)!.task!.state !== 'completed')
@@ -988,7 +997,7 @@ function fakeBoard(shared: Shared, boardId: string) {
       if (waits) throw new Refused(409, 'task_waiting', 'The task would wait for others.')
       if (assigned !== null && assigned !== actor.id) throw new Refused(409, 'task_assigned', 'The task would be assigned to another actor.')
     }
-    return { owner, needs, for: assigned as string | null, waits, claim }
+    return { owner, needs, for: assigned as string | null, due, waits, claim }
   }
   function hold(thread: Thread, actor: Actor, claim: { hash: string; lease: number }, operationId: unknown) {
     const task = thread.task!
@@ -1011,7 +1020,7 @@ function fakeBoard(shared: Shared, boardId: string) {
   function makeTask(thread: Thread, actor: Actor, checked: ReturnType<typeof checkedTask>, operationId: unknown) {
     // One that needs others waits as it's made, always: when they have all completed already, its `task.ready` follows
     // in the same write, before its claim. One that needs none is ready as it's made, with no `task.ready`.
-    thread.task = { state: checked.needs.length > 0 ? 'waiting' : 'ready', owner: checked.owner, by: actor.id, for: checked.for, needs: checked.needs, epoch: 0, claim: null, blocked: null, result: null, reason: null }
+    thread.task = { state: checked.needs.length > 0 ? 'waiting' : 'ready', owner: checked.owner, by: actor.id, for: checked.for, needs: checked.needs, epoch: 0, claim: null, blocked: null, result: null, reason: null, due: checked.due }
     taskEvent(thread, 'task.made', actor, undefined, operationId)
     ready(thread, actor, operationId)
     if (checked.claim) hold(thread, actor, checked.claim, operationId)
@@ -1040,7 +1049,7 @@ function fakeBoard(shared: Shared, boardId: string) {
    * claimed in the body's order.
    */
   function makeBatch(actor: Actor, body: Record<string, any>): { made: Thread[] } | { repeat: { channelId: string; threads: string[] } } {
-    type Asked = { key?: string; text: string; labels?: Record<string, string>; noSync?: boolean; attachments?: string[]; needs?: (string | { key: string })[]; for?: string | null }
+    type Asked = { key?: string; text: string; labels?: Record<string, string>; noSync?: boolean; attachments?: string[]; needs?: (string | { key: string })[]; for?: string | null; due?: number | null }
     const aKey = (value: unknown): value is string => typeof value === 'string' && value.length >= 1 && value.length <= 64
     // The body's shape.
     if (!Array.isArray(body.tasks) || body.tasks.length < 1 || body.tasks.length > 100) throw bad('tasks is 1 to 100 tasks.')
@@ -1071,6 +1080,7 @@ function fakeBoard(shared: Shared, boardId: string) {
       if (Object.keys(labels).some((key) => key.startsWith('board.'))) throw new Refused(400, 'reserved_label', "Labels under board. are the board's own.")
       if (Object.keys(labels).length > 16) throw new Refused(400, 'too_many_labels')
       if ((task.for ?? null) !== null && !profileOf(owner, task.for)) throw new Refused(400, 'invalid_for', "A task is assigned to one of its owner's profiles.")
+      checkedDue(task.due)
     }
     const carried = tasks.flatMap((task) => task.attachments ?? [])
     if (new Set(carried).size !== carried.length) throw new Refused(400, 'invalid_attachments', 'Two tasks carry the same attachment.')
@@ -1135,7 +1145,7 @@ function fakeBoard(shared: Shared, boardId: string) {
       const message = post(actor, thread, { text: task.text, ...(task.labels ? { labels: task.labels } : {}), ...(task.attachments?.length ? { attachments: task.attachments } : {}), ...(task.noSync ? { noSync: true } : {}) })
       message.createdAt = thread.lastActivityAt = first + at
       thread.lastMessage = { ...thread.lastMessage!, createdAt: first + at }
-      makeTask(thread, actor, { owner, needs: [...there[at]!, ...inside[at]!.map((other) => made[other]!.id)], for: task.for ?? null, waits: false, claim: null }, body.operationId)
+      makeTask(thread, actor, { owner, needs: [...there[at]!, ...inside[at]!.map((other) => made[other]!.id)], for: task.for ?? null, due: task.due ?? null, waits: false, claim: null }, body.operationId)
     }
     if (named !== null) keyed.set(named, { digest, channelId: channel.id, threads: made.map((thread) => thread.id) })
     return { made }
@@ -1385,7 +1395,7 @@ function fakeBoard(shared: Shared, boardId: string) {
       shared.receipt(actor, body.operationId)
       return { tasks: answered.tasks }
     }
-    const worked = /^\/tasks\/([^/]+)\/(claim|renew|release|complete|fail|block|unblock|reopen|assign|needs|cancel)$/.exec(rest)
+    const worked = /^\/tasks\/([^/]+)\/(claim|renew|release|complete|fail|block|unblock|reopen|assign|needs|due|cancel)$/.exec(rest)
     if (method !== 'POST' || !worked) return undefined
     const verb = worked[2]!
     let wrote = false
@@ -1484,6 +1494,15 @@ function fakeBoard(shared: Shared, boardId: string) {
         if (task.for !== to) {
           task.for = to
           taskEvent(thread, 'task.assigned', actor, from, op)
+        }
+      } else if (verb === 'due') {
+        ownerOrManage(actor, thread)
+        const due = checkedDue(body.due)
+        // A claim was taken on what it says, not on when it's due: it changes under one, and a finished task's stays.
+        if (finishedFor(task) || task.state === 'failed') throw finishedTask(task)
+        if (task.due !== due) {
+          task.due = due
+          taskEvent(thread, 'task.due_changed', actor, from, op)
         }
       } else if (verb === 'needs') {
         ownerOrManage(actor, thread)

@@ -8,6 +8,7 @@ import type {
   ActorView,
   AssignTaskBody,
   TaskNeedsBody,
+  TaskDueBody,
   BlockTaskBody,
   CancelTaskBody,
   ChannelMessagesQuery,
@@ -147,6 +148,8 @@ export type Protocol = {
   assignTask: { input: Id & Input<typeof AssignTaskBody>; output: { task: MessageView } }
   /** 400 `invalid_needs` for a prerequisite that isn't one, or that would make the task wait for itself. The same set is left as it is. */
   setTaskNeeds: { input: Id & Input<typeof TaskNeedsBody>; output: { task: MessageView } }
+  /** For its owner, or `manage` in its channel, while it isn't finished, whoever holds it. The same date is left as it is. */
+  setTaskDue: { input: Id & Input<typeof TaskDueBody>; output: { task: MessageView } }
   cancelTask: { input: Id & Input<typeof CancelTaskBody>; output: { task: MessageView } }
   /** The board's grants: needs `manage` at `*`, or a team owner. 501 `no_grants` where the board keeps none. */
   grants: { input: Nothing; output: { grants: GrantView[] } }

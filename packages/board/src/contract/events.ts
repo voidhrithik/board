@@ -39,6 +39,8 @@ export const ALONG_MAX = 3
 const Epoch = z.number().int().positive()
 /** When a claim's lease runs out, as an ISO time. */
 const Until = z.string().datetime()
+/** When a task is due, as an ISO time. */
+const Due = z.string().datetime()
 
 /** The board's one log. Every board fact is an event in session `board`. */
 export const boardEvents = {
@@ -149,9 +151,10 @@ export const boardEvents = {
     }),
     /**
      * The thread rooted at `id` is a task, and `by.principal` owns it. It waits while it has `needs`,
-     * until `task.ready` says they've all completed; with none, it's ready.
+     * until `task.ready` says they've all completed; with none, it's ready. A task made before
+     * due dates has none.
      */
-    'task.created': z.object({ ...Task, needs: z.array(MessageId).max(TASK_NEEDS_MAX), for: ActorId.nullable(), by: Author }),
+    'task.created': z.object({ ...Task, needs: z.array(MessageId).max(TASK_NEEDS_MAX), for: ActorId.nullable(), due: Due.nullable().optional(), by: Author }),
     /** Only actor `for` claims it now, or with null, anyone who may. */
     'task.assigned': z.object({ ...Task, for: ActorId.nullable(), by: Author }),
     /**
@@ -160,6 +163,8 @@ export const boardEvents = {
      * that's held stays held.
      */
     'task.needs_changed': z.object({ ...Task, needs: z.array(MessageId).max(TASK_NEEDS_MAX), by: Author }),
+    /** It's due at `due` now, or with null, at no time. It changes no state: a late task is worked as any other. */
+    'task.due_changed': z.object({ ...Task, due: Due.nullable(), by: Author }),
     /** (server) Every task it needs has completed. */
     'task.ready': z.object(Task),
     /** (server) `by` holds it until `until`. `token` is the SHA-256 of the claim's secret, hex: no view shows it. */

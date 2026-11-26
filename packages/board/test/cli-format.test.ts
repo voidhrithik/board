@@ -83,7 +83,7 @@ describe('tasks', () => {
   const at = (ms: number) => new Date(now + ms).toISOString()
   const holder = 'vercel:user:j+claude'
   const task = (about: Partial<TaskView>): TaskView =>
-    ({ state: 'ready', owner: by.principal, for: null, needs: [], epoch: 1, claim: null, blocked: null, result: null, reason: null, ...about }) as unknown as TaskView
+    ({ state: 'ready', owner: by.principal, for: null, needs: [], epoch: 1, claim: null, blocked: null, result: null, reason: null, due: null, ...about }) as unknown as TaskView
   const root = (text: string, about: Partial<TaskView>, labels: Record<string, string> = {}) =>
     ({
       id: 812, channel: 'work', text, re: null, labels: { ...labels, 'board.task': about.state ?? 'ready' }, reactions: {}, by, from: null,
@@ -123,6 +123,26 @@ describe('tasks', () => {
     expect(failed).toHaveLength(80)
   })
 
+  it('say how long until a task is due, or how late it is, while it is open, on its row and under its root', () => {
+    const rows = formatTasks(
+      [
+        { message: root('rotate the deploy keys', { due: at(3 * 86_400_000 + 60_000) }, { step: 'ops' }), replies: 0, last: null },
+        { message: { ...root('renew the cert', { state: 'waiting', needs: ['810'], due: at(-2 * 3_600_000) }), id: '813' }, replies: 0, last: null },
+        { message: { ...root('ship it', { state: 'completed', due: at(-86_400_000) }), id: '814' }, replies: 0, last: null },
+      ],
+      now,
+    ).split('\n')
+    expect(rows).toEqual([
+      `#812  ready      ${'rotate the deploy keys'.padEnd(30)}  step=ops  due in 3d`,
+      `#813  waiting    ${'renew the cert'.padEnd(30)}  needs #810  2h late`,
+      // A finished task's date says nothing any more.
+      `#814  completed  ship it`,
+    ])
+    expect(row({ due: at(45 * 60_000) })).toBe('      task  ready · due in 45m')
+    expect(row({ state: 'claimed', claim: { actor: holder, until: at(60_000) }, due: at(-30_000) })).toBe('      task  claimed by claude via julian · 1m left · 30s late')
+    expect(row({ state: 'canceled', due: at(-30_000) })).toBe('      task  canceled')
+  })
+
   it('print what the board did to one on its own, and a renewal for whoever follows receipts', () => {
     const message = root('fix CVE-123 in acme/web', { state: 'ready' })
     const actor = { id: holder, kind: 'profile', handle: 'julian/claude', name: 'claude', avatar: null, via: { name: 'julian', environment: null } }
@@ -133,6 +153,10 @@ describe('tasks', () => {
     // What a task waits for, changed: the ones it waits for now, or that it waits for nothing.
     expect(formatEvent(event('task.needs_changed', { id: '812', needs: ['810', '811'] }, actor))).toBe('#812  work  task needs #810 #811 by claude via julian')
     expect(formatEvent(event('task.needs_changed', { id: '812', needs: [] }, actor))).toBe('#812  work  task needs nothing by claude via julian')
+    // When it's due, changed: the time, to the minute when that's all it has, or that it has none.
+    expect(formatEvent(event('task.due_changed', { id: '812', due: '2026-12-01T17:00:00.000Z' }, actor))).toBe('#812  work  task due 2026-12-01T17:00Z by claude via julian')
+    expect(formatEvent(event('task.due_changed', { id: '812', due: '2026-12-01T17:00:30.000Z' }, actor))).toBe('#812  work  task due 2026-12-01T17:00:30.000Z by claude via julian')
+    expect(formatEvent(event('task.due_changed', { id: '812', due: null }, actor))).toBe('#812  work  task no due date by claude via julian')
   })
 })
 

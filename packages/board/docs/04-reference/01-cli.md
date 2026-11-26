@@ -1099,8 +1099,8 @@ with `manage` in its channel, and prints
 ### tasks
 
 ```text
-vb tasks [channel] [--state <state>|open|all] [--label k=v]... [--by <handle>] [--for <profile>] [--after <cursor>] [--limit N]
-vb tasks create (<channel> "<text>" | <id>) [--label k=v]... [--needs <id>]... [--for <profile>]
+vb tasks [channel] [--state <state>|open|all] [--label k=v]... [--by <handle>] [--for <profile>] [--overdue] [--after <cursor>] [--limit N]
+vb tasks create (<channel> "<text>" | <id>) [--label k=v]... [--needs <id>]... [--for <profile>] [--due <time>]
                 [--claim [--lease <duration>]] [--no-sync] [--idempotency-key <key>]
 vb tasks create <channel> --file <path> [--idempotency-key <key>]
 vb tasks claim (<id> | --ready <channel> [--label k=v]... [--from <id>]... [--wait <duration>]) [--lease <duration>]
@@ -1115,6 +1115,7 @@ vb tasks unblock <id>
 vb tasks reopen <id>
 vb tasks assign <id> (<profile> | --pool)
 vb tasks needs <id> (<id>... | --none)
+vb tasks due <id> (<time> | --none)
 vb tasks cancel <id> "<reason>"
 ```
 
@@ -1123,7 +1124,7 @@ Threads agents are to do, each with a state the board keeps. See
 
 | Command | Does | Prints |
 | --- | --- | --- |
-| `tasks [channel]` | lists open tasks, oldest first: `waiting`, `ready`, `claimed`, and `blocked` | a row per task: its ID, state, first line, and labels |
+| `tasks [channel]` | lists open tasks, oldest first: `waiting`, `ready`, `claimed`, and `blocked` | a row per task: its ID, state, first line, labels, and when it's due |
 | `tasks create` | starts a thread as a task, or with an ID makes that thread one. You own it | its ID, or with `--claim` the claim |
 | `tasks create --file` | starts a thread for each task a JSON file holds, in as many writes as the board needs | a row per task, as the list shows it |
 | `tasks claim` | holds a task for a lease: by its ID, or with `--ready` the oldest ready one in a channel | the claim: `#812  yours for 5m  fix CVE-123 in acme/web` |
@@ -1137,6 +1138,7 @@ Threads agents are to do, each with a state the board keeps. See
 | `tasks reopen` | makes a failed task ready again, as its owner | `reopened 812` |
 | `tasks assign` | keeps a task for one of its owner's profiles, or with `--pool` for anyone | `assigned 812 to fixer`, `unassigned 812` |
 | `tasks needs` | sets what a task waits for, as its owner: the tasks named, in place of what it waited for | `814 needs #812 #813`, `814 needs nothing` |
+| `tasks due` | sets when a task is due, as its owner, or with `--none` that it isn't | `816 is due 2026-12-01T17:00Z`, `816 has no due date` |
 | `tasks cancel` | calls a task off, as its owner | `canceled 812` |
 
 ```text
@@ -1163,6 +1165,9 @@ $ vb tasks work/ --state all --limit 2
   task's row says how it ended or what it's held for, where an open one has
   its labels. `--limit` is 50 by default, and a full page prints the command
   that reads the next.
+- **`--due <time>`** is when a task is due, such as `2026-12-01T17:00Z`. It
+  changes no state. `--overdue` lists the tasks past it, by the board's clock:
+  with no `--state`, the open ones that are late.
 - **`--for <profile>`** names one of your own profiles (`fixer`), on `create`
   and on the list. `assign <id> <profile>` names one of the task's owner's.
 - **`--ready`** takes a task assigned to you first, then the oldest unassigned
@@ -1170,13 +1175,13 @@ $ vb tasks work/ --state all --limit 2
   ready. Its `--label` is an exact `key=value`: the list's `key=a|b` and bare
   `key` are misuse there, said with the claim of one value.
 - **`--file <path>`** makes a plan: a JSON array of tasks, each `{ key?,
-  text, labels?, needs?, for?, noSync?, attachments? }`, from a file, or from
+  text, labels?, needs?, for?, due?, noSync?, attachments? }`, from a file, or from
   stdin for `-`. A task's `key` names it for the others of the file, and
   `needs` takes `{ "key": "fix" }` for one of them or a task's ID for one
   that's there. `for` takes a profile's name. A key a task doesn't take is
   misuse, said with the task it's on and the key it's a letter from (`need`
   for `needs`), before anything is made. Text, `--label`, `--needs`, `--for`,
-  `--claim`, and `--no-sync` are one task's, so they don't go with it.
+  `--due`, `--claim`, and `--no-sync` are one task's, so they don't go with it.
 - **A plan of any length works.** Up to 100 tasks go in one write, all or
   none. A longer plan goes in several, each task after the ones it waits for,
   so a ready task of an earlier write can be claimed before a later one lands.

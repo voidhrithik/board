@@ -193,6 +193,8 @@ export const PostBody = z
 /** `30m`, `1d`: a number and a unit, `s`, `m`, `h`, or `d`. */
 const Duration = z.string().regex(/^\d+(\.\d+)?(s|m|h|d)$/, 'durations look like 30s, 30m, 12h, or 1d')
 const Instant = z.string().datetime({ offset: true })
+/** When a task is due: any time with an offset, which the board keeps in UTC. Null is no time. */
+const TaskDue = Instant.nullable()
 
 /**
  * A message to post later, as the caller: once (`in` or `at`), or repeating
@@ -269,8 +271,8 @@ const ClaimToken = { token: z.string().regex(/^[A-Za-z0-9_-]{43}$/, 'a claim tok
 /**
  * A new thread that's a task (`channel` and `text`, with `labels`, `noSync`, `attachments`, and an
  * `id` as a post takes them), or the thread `re` roots made one. `needs` are the tasks it waits for,
- * `for` the one actor of its owner's that claims it, and `claim` claims it in the same write, for
- * `lease` seconds.
+ * `for` the one actor of its owner's that claims it, `due` when it's due, and `claim` claims it in
+ * the same write, for `lease` seconds.
  */
 export const CreateTaskBody = z
   .object({
@@ -285,6 +287,7 @@ export const CreateTaskBody = z
     /** How many tasks one may wait for is the backend's to say. */
     needs: z.array(Ref).optional(),
     for: ActorId.nullable().optional(),
+    due: TaskDue.optional(),
     claim: z.boolean().optional(),
     lease: Lease.optional(),
     ...ClaimToken,
@@ -330,6 +333,7 @@ export const CreateTasksBody = z.object({
           /** How many tasks one may wait for is the backend's to say. */
           needs: z.array(z.union([Ref, z.object({ key: TaskKey }).strict()])).optional(),
           for: ActorId.nullable().optional(),
+          due: TaskDue.optional(),
         })
         .refine((task) => task.text.trim().length > 0 || (task.attachments?.length ?? 0) > 0, { message: 'message text is empty', path: ['text'] })
         .refine((task) => storable(task.text), { message: 'message text has a NUL character or a lone surrogate', path: ['text'] }),
@@ -365,6 +369,8 @@ export const TasksQuery = z.object({
   for: z.string().optional(),
   /** A task's ID: the tasks that wait for it. */
   needs: Ref.optional(),
+  /** Only the tasks whose due date has passed, by the board's clock: with the default state, the open ones that are late. */
+  overdue: flag.optional(),
   /** A `cursor` an earlier page reported. */
   after: Ref.optional(),
   limit: z.coerce.number().int().min(1).max(500).optional(),
@@ -410,6 +416,8 @@ export const BlockTaskBody = z
 export const AssignTaskBody = z.object({ for: ActorId.nullable() })
 /** The tasks it waits for now, in place of what it waited for: none, for a task that waits for nothing. How many it may wait for is the backend's to say. */
 export const TaskNeedsBody = z.object({ needs: z.array(Ref) })
+/** When the task is due now, or null for no time. */
+export const TaskDueBody = z.object({ due: TaskDue })
 export const CancelTaskBody = z.object({ reason: SentTaskNote })
 
 const CanGrant = z.union([z.literal('all'), z.array(z.string().min(1).max(16)).max(8)])
@@ -1267,6 +1275,8 @@ export const routes = {
   assignTask: { method: 'POST', path: '/tasks/:id/assign', body: AssignTaskBody },
   /** Replaces what a task waits for, while no one holds it and it isn't finished. */
   setTaskNeeds: { method: 'POST', path: '/tasks/:id/needs', body: TaskNeedsBody },
+  /** Changes when a task is due, while it isn't finished. */
+  setTaskDue: { method: 'POST', path: '/tasks/:id/due', body: TaskDueBody },
   cancelTask: { method: 'POST', path: '/tasks/:id/cancel', body: CancelTaskBody },
   /** Listing grants needs manage at `*`; changing one, manage at each pattern its `can` names. Team owners always may. */
   grants: { method: 'GET', path: '/grants' },

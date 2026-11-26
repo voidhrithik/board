@@ -16,6 +16,7 @@ import { fakeQueue } from './queue.ts'
 
 const SECOND = 1000
 const MINUTE = 60 * SECOND
+const HOUR = 60 * MINUTE
 const T0 = Date.parse('2026-10-07T12:00:00.000Z')
 const at = (ms: number) => new Date(T0 + ms).toISOString()
 
@@ -93,7 +94,7 @@ describe('a task', () => {
     expect(made.status).toBe(201)
     const root = made.body.task as MessageView
     expect(root).toMatchObject({ channel: 'work', text: 'fix CVE-123 in acme/web', re: null, by: { actor: ADA }, labels: { step: 'fix', 'board.task': 'ready' } })
-    expect(root.task).toEqual({ state: 'ready', owner: ADA, by: ADA, for: null, needs: [], epoch: 0, claim: null, blocked: null, result: null, reason: null })
+    expect(root.task).toEqual({ state: 'ready', owner: ADA, by: ADA, for: null, needs: [], epoch: 0, claim: null, blocked: null, result: null, reason: null, due: null })
     expect(made.body.claim).toBeUndefined()
 
     // Anyone who reads the channel reads it, replies in it, and finds it by its state.
@@ -913,6 +914,70 @@ describe('what a task needs, changed', () => {
     const { cursor } = (await ada('GET', '/events')).body
     expect((await needs(ada, review.id, [fix.id])).body.task.task).toMatchObject({ state: 'waiting', needs: [fix.id], claim: null, epoch: 1 })
     expect((await events(ada, cursor)).map((event) => [event.type, event.message?.task?.state])).toEqual([['task.expired', 'ready'], ['task.needs_changed', 'waiting']])
+  })
+})
+
+describe('a due date', () => {
+  const due = (call: Call, id: string, when: string | null) => call('POST', `/tasks/${id}/due`, { due: when })
+
+  it("is set when a task is made, shows on its root, and is its owner's to change while the task isn't finished", async () => {
+    const { ada, bo, board } = setup()
+    // Any time with an offset, as the board says times: in UTC.
+    const fix = await task(ada, 'fix CVE-123', { due: '2026-10-08T14:00:00+02:00' })
+    expect(fix.task).toMatchObject({ state: 'ready', due: '2026-10-08T12:00:00.000Z' })
+    expect((await task(ada, 'whenever')).task!.due).toBeNull()
+    expect(code(await ada('POST', '/tasks', { channel: 'work', text: 'when?', due: 'tomorrow' }))).toEqual([400, 'invalid_request'])
+    // A thread made a task, and each task of a batch, takes one too.
+    const issue = (await bo('POST', '/messages', { channel: 'issues', text: 'export times out past 10k rows' })).body.message
+    expect((await ada('POST', '/tasks', { re: issue.id, due: at(HOUR) })).body.task.task.due).toBe(at(HOUR))
+    const batch = await ada('POST', '/tasks/batch', { channel: 'work', tasks: [{ text: 'one', due: at(HOUR) }, { text: 'two' }] })
+    expect(batch.body.tasks.map((root: MessageView) => root.task!.due)).toEqual([at(HOUR), null])
+
+    let { cursor } = (await ada('GET', '/events')).body
+    const moved = await due(ada, fix.id, at(2 * HOUR))
+    expect(moved.status).toBe(200)
+    expect(moved.body.task.task).toMatchObject({ state: 'ready', due: at(2 * HOUR) })
+    const [changed] = (await events(ada, cursor)).filter((event) => event.message?.id === fix.id)
+    expect(changed).toMatchObject({ type: 'task.due_changed', payload: { id: fix.id, thread: fix.thread, due: at(2 * HOUR), by: { actor: ADA, principal: ADA, profile: null } }, actor: { id: ADA } })
+    // The same date changes nothing, and null takes it off.
+    ;({ cursor } = (await ada('GET', '/events')).body)
+    expect((await due(ada, fix.id, at(2 * HOUR))).body.task.task.due).toBe(at(2 * HOUR))
+    expect(await events(ada, cursor)).toEqual([])
+    expect((await due(ada, fix.id, null)).body.task.task.due).toBeNull()
+    expect(code(await due(ada, fix.id, 'soon' as never))).toEqual([400, 'invalid_request'])
+
+    // Its owner changes it, or manage in its channel, and no one else.
+    expect(code(await due(web(board), fix.id, at(HOUR)))).toEqual([403, 'task_not_owned'])
+    expect((await due(bo, fix.id, at(HOUR))).body.task.task).toMatchObject({ due: at(HOUR), owner: ADA })
+    expect(code(await due(ada, (await ada('POST', '/messages', { channel: 'work', text: 'not a task' })).body.message.id, at(HOUR)))).toEqual([404, 'not_a_task'])
+    // A claim was taken on what the task says, not on when it's due: the date changes under it, and the claim stays.
+    const held = await claim(bo, fix.id)
+    expect((await due(ada, fix.id, at(3 * HOUR))).body.task.task).toMatchObject({ state: 'claimed', due: at(3 * HOUR), epoch: held.epoch })
+    expect((await bo('POST', `/tasks/${fix.id}/complete`, held)).status).toBe(200)
+    // A finished task's stays as it was.
+    expect(code(await due(ada, fix.id, at(4 * HOUR)))).toEqual([409, 'task_finished'])
+    expect((await read(ada, fix.id)).task!.due).toBe(at(3 * HOUR))
+  })
+
+  it("lists what is past its date, by the board's clock: the open tasks that are late, unless a state says otherwise", async () => {
+    const { ada, bo, advance } = setup()
+    const late = await task(ada, 'late', { due: at(-MINUTE) })
+    const soon = await task(ada, 'soon', { due: at(HOUR) })
+    await task(ada, 'whenever')
+    const held = await task(ada, 'held, and late', { due: at(-HOUR) })
+    await ada('POST', `/tasks/${held.id}/block`, { reason: 'which release?' })
+    const done = await task(ada, 'done late', { due: at(-HOUR) })
+    await bo('POST', `/tasks/${done.id}/complete`, await claim(bo, done.id))
+    const ids = async (query: string) => ((await ada('GET', `/tasks?${query}`)).body.tasks as { message: MessageView }[]).map((t) => t.message.id)
+    expect(await ids('overdue=1')).toEqual([late.id, held.id])
+    expect(await ids('overdue=1&state=blocked')).toEqual([held.id])
+    expect(await ids('overdue=1&state=all')).toEqual([late.id, held.id, done.id])
+    // Due at this very moment isn't late yet.
+    await advance(HOUR)
+    expect(await ids('overdue=1')).toEqual([late.id, held.id])
+    await advance(SECOND)
+    expect(await ids('overdue=1')).toEqual([late.id, soon.id, held.id])
+    expect(await ids('overdue=1&limit=1')).toEqual([late.id])
   })
 })
 
@@ -1819,6 +1884,21 @@ describe("the fold, for whoever folds the board's events themselves", () => {
     // And it's no version of a task it didn't change, or of a reply.
     expect(folded(created, claimed(1), rewired).byId[1]!.version).toBe(4)
     expect(folded(['task.needs_changed', { id: 2, thread: 'root', needs: [7], by }]).byId[2]!.task).toBeUndefined()
+  })
+
+  it('dates a task while it is open, whoever holds it, and leaves one that is finished as it was', () => {
+    const dueOf = (...payloads: [string, object][]) => folded(...payloads).byId[1]!
+    const dated: [string, object] = ['task.due_changed', { ...about, due: at(HOUR), by }]
+    expect(dueOf(created).task).toMatchObject({ state: 'ready', due: null })
+    expect(dueOf(['task.created', { ...about, needs: [], for: null, due: at(HOUR), by }]).task).toMatchObject({ due: at(HOUR) })
+    expect(dueOf(created, dated).task).toMatchObject({ state: 'ready', due: at(HOUR) })
+    expect(dueOf(created, claimed(1), dated).task).toMatchObject({ state: 'claimed', epoch: 1, due: at(HOUR) })
+    expect(dueOf(created, dated, ['task.due_changed', { ...about, due: null, by }]).task).toMatchObject({ due: null })
+    // The same date again is no version of it, and a finished task's stays.
+    expect(dueOf(created, dated, dated).version).toBe(dueOf(created, dated).version)
+    expect(dueOf(created, claimed(1), ['task.completed', { ...about, epoch: 1, result: null, by }], dated).task).toMatchObject({ state: 'completed', due: null })
+    expect(dueOf(created, ['task.canceled', { ...about, reason: 'no', by }], dated).task).toMatchObject({ state: 'canceled', due: null })
+    expect(folded(['task.due_changed', { id: 2, thread: 'root', due: at(HOUR), by }]).byId[2]!.task).toBeUndefined()
   })
 
   it('keeps tasks on roots that are there: a reply is no task, and a deleted root wears no label', () => {

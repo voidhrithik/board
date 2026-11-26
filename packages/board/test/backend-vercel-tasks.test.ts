@@ -92,6 +92,7 @@ describe("vercel()'s tasks", () => {
       'changes what a task needs: it waits for the new ones, is ready once they have completed, and at once with none': 'passed',
       'refuses a change of needs that would make a task wait for itself, straight back or through others': 'passed',
       'changes what a task needs only while no one holds it and it has not finished': 'passed',
+      'dates a task when it is made and after, whoever holds it, and lists the open ones past their date': 'passed',
       'makes several tasks in one write, in the order given: each waits for the ones it names, of the batch or there already, and an id makes them once': 'passed',
       'makes none of a batch when one of its tasks can not be made, wherever it comes in it': 'passed',
       'holds a task for a person, by its owner or its claim, and gives it back when unblocked': 'passed',
@@ -209,7 +210,7 @@ describe("vercel()'s tasks", () => {
     // A task is its root: its ID is the root message's, and it reads as its thread does.
     expect(fix.id).toMatch(/^msg_[0-9a-f-]{36}_1$/)
     expect(fix).toMatchObject({ channel: 'work', text: 'fix CVE-123 in acme/web', re: null, labels: { step: 'fix', 'board.task': 'ready' } })
-    expect(fix.task).toEqual({ state: 'ready', owner: JULIAN, by: JULIAN, for: null, needs: [], epoch: 0, claim: null, blocked: null, result: null, reason: null })
+    expect(fix.task).toEqual({ state: 'ready', owner: JULIAN, by: JULIAN, for: null, needs: [], epoch: 0, claim: null, blocked: null, result: null, reason: null, due: null })
     // What it waits for is named by its root's ID, as the board names a task, where the API names its thread.
     expect(review.task).toMatchObject({ state: 'waiting', needs: [fix.id], for: `${JULIAN}+reviewer` })
     expect(review.labels['board.task']).toBe('waiting')
@@ -757,6 +758,52 @@ describe("vercel()'s tasks", () => {
     await expect(handleOn(api, 'project:prj_web:production').tasks.needs(ship.id, [])).rejects.toMatchObject({ status: 403, code: 'task_not_owned' })
     // What it waited for completed meanwhile, and the change that was refused left it be.
     expect((await julian.thread(ship.id)).message.task).toMatchObject({ state: 'ready', needs: [review.id] })
+  })
+
+  it("sends when a task is due in milliseconds, as the API keeps times, changes it on the API's route, and lists the late ones by the board's clock", async () => {
+    const api = fakeMessageboard()
+    const julian = handleOn(api)
+    const due = '2099-12-01T17:00:00.000Z'
+    const start = (await julian.poll({ channel: 'work' })).cursor
+    const { task: fix } = await julian.tasks.create('work', { text: 'fix it', due })
+    expect(julian.wrote().body).toMatchObject({ channel: 'work', text: 'fix it', due: Date.parse(due) })
+    expect(fix.task).toMatchObject({ state: 'ready', due })
+    const { task: late } = await julian.tasks.create('work', { text: 'renew the cert', due: '2020-01-01T00:00:00.000Z' })
+    const [batched] = await julian.tasks.createMany('work', [{ text: 'one', due }])
+    expect(julian.wrote().body!.tasks).toEqual([{ text: 'one', due: Date.parse(due) }])
+    expect(batched!.task!.due).toBe(due)
+    const issue = await julian.post('issues', 'export times out past 10k rows')
+    expect((await julian.tasks.create({ re: issue.id }, { due })).task.task!.due).toBe(due)
+    expect(julian.wrote().body).toMatchObject({ threadId: threadOf(issue.id), due: Date.parse(due) })
+    // A task made with no date sends none.
+    await julian.tasks.create('work', { text: 'whenever' })
+    expect(julian.wrote().body).not.toHaveProperty('due')
+
+    const { cursor } = await julian.poll({ channel: 'work' })
+    const moved = await julian.tasks.due(fix.id, '2099-12-02T09:30:00.000Z')
+    expect(julian.wrote()).toMatchObject({ method: 'POST', version: 2, path: `/tasks/${threadOf(fix.id)}/due` })
+    expect(julian.wrote().body).toEqual({ operationId: expect.any(String), due: Date.parse('2099-12-02T09:30:00.000Z') })
+    expect(moved.task).toMatchObject({ state: 'ready', due: '2099-12-02T09:30:00.000Z' })
+    expect((await julian.tasks.due(fix.id, null)).task!.due).toBeNull()
+    expect(julian.wrote().body).toEqual({ operationId: expect.any(String), due: null })
+    const by = { actor: JULIAN, principal: JULIAN, profile: null }
+    const about = { id: fix.id, thread: threadOf(fix.id) }
+    const changes = (await julian.poll({ channel: 'work', after: cursor })).events.filter((event) => event.message?.id === fix.id)
+    expect(changes.map((event) => [event.type, event.payload])).toEqual([
+      ['task.due_changed', { ...about, due: '2099-12-02T09:30:00.000Z', by }],
+      ['task.due_changed', { ...about, due: null, by }],
+    ])
+    const made = (await julian.poll({ channel: 'work', after: start })).events.find((event) => event.type === 'task.created' && event.message?.id === late.id)
+    expect(made?.payload).toMatchObject({ id: late.id, due: '2020-01-01T00:00:00.000Z' })
+
+    // Late is the board's clock's to say: the API is asked for the open tasks, and those past their date are kept.
+    expect((await julian.tasks.list({ overdue: true })).tasks.map((listed) => listed.message.id)).toEqual([late.id])
+    expect((await julian.tasks.list({ channel: 'issues', overdue: true })).tasks).toEqual([])
+    // What the API refuses is a board's: someone else's task, and a finished one's date.
+    await expect(handleOn(api, 'project:prj_web:production').tasks.due(late.id, null)).rejects.toMatchObject({ status: 403, code: 'task_not_owned' })
+    await (await julian.tasks.claim(late.id, { lease: 60 })).complete()
+    await expect(julian.tasks.due(late.id, null)).rejects.toMatchObject({ status: 409, code: 'task_finished' })
+    expect((await julian.thread(late.id)).message.task!.due).toBe('2020-01-01T00:00:00.000Z')
   })
 
   it("has only what a change adds looked behind for a cycle there, so one that drops a prerequisite lands whatever the task keeps", async () => {

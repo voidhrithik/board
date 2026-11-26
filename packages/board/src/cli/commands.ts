@@ -158,6 +158,8 @@ export const options = {
   kind: { type: 'string', value: 'kind', description: 'what the hold is for: needs_input, awaiting_approval' },
   pool: { type: 'boolean', description: 'back to anyone who may claim it' },
   none: { type: 'boolean', description: 'wait for nothing' },
+  due: { type: 'string', value: 'time', description: 'when it is due, such as 2026-12-01T17:00Z' },
+  overdue: { type: 'boolean', description: 'only those past their due date' },
   // What a turn-end hook an earlier board installed still passes to `hook`.
   agent: { type: 'string', value: 'name', description: "the agent whose turn ended", hidden: true },
 } as const satisfies Record<string, Spec>
@@ -576,6 +578,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
       option('label', 'with a label on its root', 'k[=v|w]'),
       option('by', 'whose root a handle wrote'),
       option('for', 'assigned to a profile of yours', 'profile'),
+      option('overdue'),
       option('after', 'after a cursor an earlier page printed', 'cursor'),
       option('limit', 'tasks to list (default: 50)'),
     ],
@@ -583,6 +586,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
     examples: [
       { name: "list a queue's open tasks", value: 'tasks work/' },
       { name: 'list what is ready to fix', value: 'tasks work/ --state ready --label step=fix' },
+      { name: 'list the open tasks that are late', value: 'tasks work/ --overdue' },
     ],
     subcommands: [
       {
@@ -596,15 +600,17 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
           option('label', 'label it, to route it', 'k=v'),
           option('needs'),
           option('for', 'only this profile of yours claims it', 'profile'),
+          option('due'),
           claimNow,
           option('lease', 'with --claim: how long to hold it'),
-          option('file', 'a plan, from a JSON file (- reads stdin): an array of tasks, each { key?, text, labels?, needs?, for?, noSync?, attachments? }, all made, in as many writes as it takes. needs takes a key of the plan ("fix" or {"key": "fix"}) or a task that\'s there by its ID ("812" or {"id": "812"})'),
+          option('file', 'a plan, from a JSON file (- reads stdin): an array of tasks, each { key?, text, labels?, needs?, for?, due?, noSync?, attachments? }, all made, in as many writes as it takes. needs takes a key of the plan ("fix" or {"key": "fix"}) or a task that\'s there by its ID ("812" or {"id": "812"})'),
           option('no-sync'),
           option('idempotency-key', 'sending the same one again makes it once'),
         ],
         examples: [
           { name: 'hand a fix to whoever takes fixes', value: 'tasks create work "fix CVE-123 in acme/web" --label step=fix' },
           { name: 'a review that waits for it', value: 'tasks create work "review the fix for CVE-123" --label step=review --needs 812' },
+          { name: 'a task due by a time', value: 'tasks create work "rotate the deploy keys" --due 2026-12-01T17:00Z' },
           { name: 'make a task of a thread that is there', value: 'tasks create 812' },
           { name: 'a plan of tasks that wait for each other', value: 'tasks create work --file plan.json --idempotency-key migration-7' },
         ],
@@ -699,6 +705,16 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
         examples: [
           { name: 'wait for two tasks', value: 'tasks needs 814 812 813' },
           { name: 'wait for nothing', value: 'tasks needs 814 --none' },
+        ],
+      },
+      {
+        name: 'due',
+        description: 'set when a task is due, as its owner, while it has not finished',
+        arguments: [task(), { name: 'time', required: false, description: 'when it is due, such as 2026-12-01T17:00Z' }],
+        options: [option('none', 'no due date')],
+        examples: [
+          { name: 'due by a time', value: 'tasks due 812 2026-12-01T17:00Z' },
+          { name: 'no due date', value: 'tasks due 812 --none' },
         ],
       },
       {

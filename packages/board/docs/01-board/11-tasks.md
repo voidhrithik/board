@@ -26,13 +26,13 @@ on it as on any other.
 - **`vb tasks create <id>`** makes a task of a thread that's there, as it is:
   an issue someone filed, a question from Slack. Its text stays its author's.
 - **You own the tasks you make.** A task's owner, or anyone with `manage` in
-  its channel, assigns, holds, reopens, and cancels it.
+  its channel, assigns, dates, holds, reopens, and cancels it.
 - **Labels route work.** `--label step=fix` here is what `claim --ready
   --label step=fix` asks for there.
 - **`vb tasks [channel]`** lists open tasks, oldest first, the order a queue
   works them in. `--state` narrows it to one state, or widens it to `all`.
-  `--label`, `--by`, and `--for` narrow it further. A page is 50 tasks, and a
-  full one prints the command that reads the next.
+  `--label`, `--by`, `--for`, and `--overdue` narrow it further. A page is 50
+  tasks, and a full one prints the command that reads the next.
 
 ## Work a task
 
@@ -210,6 +210,30 @@ $ vb tasks needs 814 --none
 814 needs nothing
 ```
 
+## Due dates
+
+```text
+$ vb tasks create work "rotate the deploy keys" --due 2026-12-01T17:00Z
+816
+$ vb tasks work/ --overdue
+#809  ready      renew the cert for acme.dev     2d late
+$ vb tasks due 816 2026-12-02T09:00Z
+816 is due 2026-12-02T09:00Z
+$ vb tasks due 816 --none
+816 has no due date
+```
+
+- **`--due <time>` says when a task is due,** on `create` or as a plan's
+  `due`. The board keeps it in UTC.
+- **A due date changes no state.** A late task is claimed, worked, and
+  finished as any other.
+- **`vb tasks --overdue` lists the open tasks past their due date,** by the
+  board's clock. `--state` lists another state's, or `all`.
+- **A row and `read` say when it's due:** `due in 3d`, or `2d late`, while
+  the task is open.
+- **Its owner changes it** with `vb tasks due <id> <time>`, or takes it off
+  with `--none`, whoever holds the task. A finished task's stays as it was.
+
 ## A plan of tasks
 
 ```json plan.json
@@ -231,7 +255,7 @@ vb tasks create work --file plan.json --idempotency-key cve-123
 ```
 
 - **A plan is a JSON array of tasks,** from a file, or from stdin for `-`.
-  Each is `{ key?, text, labels?, needs?, for?, noSync?, attachments? }`. Any
+  Each is `{ key?, text, labels?, needs?, for?, due?, noSync?, attachments? }`. Any
   other key is refused before a task is made, so a `need` for `needs` can't
   make a task that waits for nothing.
 - **A task's `key` names it for the others of the plan.** `needs` takes
@@ -293,8 +317,8 @@ $ vb tasks assign 832 --pool
 unassigned 832
 ```
 
-- **Its owner made it a task.** `block`, `unblock`, `reopen`, `assign`, and
-  `cancel` are for its owner, or anyone with `manage` in its channel. Anyone
+- **Its owner made it a task.** `block`, `unblock`, `reopen`, `assign`, `due`,
+  and `cancel` are for its owner, or anyone with `manage` in its channel. Anyone
   else fails with `task_not_owned`.
 - **A profile owns only the tasks it made.** `vb --as fixer` changes what
   `fixer` made a task, and not what you or `--as triage` did. As yourself,

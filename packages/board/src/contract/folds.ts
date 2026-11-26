@@ -35,6 +35,8 @@ export type Task = {
   result: string | null
   /** Why it failed or was canceled. */
   reason: string | null
+  /** When it's due, as an ISO time, or null for no time. */
+  due: string | null
 }
 
 export type Message = {
@@ -208,11 +210,12 @@ function foldMessage(state: MessagesState, event: BoardEvent): Message | undefin
       // A thread becomes a task once, at its root, while the root is there.
       if (!message || message.deleted || message.re !== null || message.task) return undefined
       const { needs, by } = event.payload
-      message.task = { state: needs.length > 0 ? 'waiting' : 'ready', owner: by.principal, by: by.actor, for: event.payload.for, needs: [...needs], epoch: 0, claim: null, blocked: null, result: null, reason: null }
+      message.task = { state: needs.length > 0 ? 'waiting' : 'ready', owner: by.principal, by: by.actor, for: event.payload.for, needs: [...needs], epoch: 0, claim: null, blocked: null, result: null, reason: null, due: event.payload.due ?? null }
       return labeled(message)
     }
     case 'task.assigned':
     case 'task.needs_changed':
+    case 'task.due_changed':
     case 'task.ready':
     case 'task.claimed':
     case 'task.renewed':
@@ -241,6 +244,9 @@ function labeled(message: Message): Message {
 
 type TaskEvent = Extract<BoardEvent, { type: `task.${string}` }>
 
+/** Whether a task has come to an end: nothing works it any more. */
+const finished = (task: Task) => task.state === 'completed' || task.state === 'failed' || task.state === 'canceled'
+
 /** Whether a claim's write is by the claim that holds the task: the same epoch, while it's claimed. */
 const holds = (task: Task, epoch: number) => task.state === 'claimed' && task.epoch === epoch
 
@@ -261,6 +267,11 @@ function foldTask(task: Task, event: Exclude<TaskEvent, { type: 'task.created' }
       if (task.state !== 'waiting' && task.state !== 'ready' && task.state !== 'blocked') return false
       task.needs = [...event.payload.needs]
       if (task.state !== 'blocked') task.state = task.needs.length > 0 ? 'waiting' : 'ready'
+      return true
+    case 'task.due_changed':
+      // A finished task's date says nothing any more: it stays as it was.
+      if (finished(task) || task.due === event.payload.due) return false
+      task.due = event.payload.due
       return true
     case 'task.ready':
       if (task.state !== 'waiting') return false
