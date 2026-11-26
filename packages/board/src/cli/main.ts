@@ -112,7 +112,8 @@ const MARK = '\0'
 /**
  * Attachment IDs are base64url, so boards minted some that start with `-`,
  * which `parseArgs` reads as a flag. Where `download` takes its ID, a token
- * shaped like one is the ID: this marks it to parse as a positional.
+ * shaped like one is the ID: this marks it to parse as a positional. So is a
+ * priority below 0, where `tasks priority` takes one after its task.
  */
 function markAttachmentId(args: string[]): string[] {
   const positionals: string[] = []
@@ -121,6 +122,8 @@ function markAttachmentId(args: string[]): string[] {
     if (arg === '--') break
     if (!arg.startsWith('-') || arg === '-') positionals.push(arg)
     else if (positionals.length === 1 && positionals[0] === 'download' && AttachmentId.safeParse(arg).success)
+      return [...args.slice(0, i), `${MARK}${arg}`, ...args.slice(i + 1)]
+    else if (positionals.length === 3 && positionals[0] === 'tasks' && positionals[1] === 'priority' && /^-\d+$/.test(arg))
       return [...args.slice(0, i), `${MARK}${arg}`, ...args.slice(i + 1)]
     else if (takesValue(arg)) i++
   }
@@ -752,6 +755,12 @@ function onlyPrincipalFlags(verb: 'create' | 'update' | 'explain') {
   }
 }
 
+/** An integer as a flag or an argument gives one, such as 2 or -1: `says` is what takes it, for the error. */
+function integer(says: string, value: string): number {
+  if (!/^-?\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw usage(`${says} an integer, such as 2 or -1, and ${value} isn't one.`)
+  return Number(value)
+}
+
 /** A time flag: anything `Date` reads, as ISO. */
 function instant(flag: string, value: string): string {
   const time = new Date(value)
@@ -897,6 +906,7 @@ function doing(): string {
       if (a === 'create') return b !== undefined && isMessageRef(b) ? `make ${ref(b)} a task` : `create a task in ${b ?? 'a channel'}`
       if (a === 'renew') return `renew the claim on ${one}`
       if (a === 'needs') return `change what ${one} needs`
+      if (a === 'priority') return `change the priority of ${one}`
       return `${a} ${one}`
     }
     case 'grants':
@@ -2195,7 +2205,7 @@ function unknownCommand(command: string): Failed {
 }
 
 /** What `tasks` does to a task, by the word after it: any other word is a channel to list. */
-const TASK_VERBS = new Set(['create', 'claim', 'run', 'renew', 'release', 'complete', 'fail', 'block', 'unblock', 'reopen', 'assign', 'needs', 'cancel'])
+const TASK_VERBS = new Set(['create', 'claim', 'run', 'renew', 'release', 'complete', 'fail', 'block', 'unblock', 'reopen', 'assign', 'needs', 'priority', 'cancel'])
 const TASK_STATES = ['waiting', 'ready', 'claimed', 'blocked', 'completed', 'failed', 'canceled']
 
 /** A task's ID as you'd write it: `#812` or `812`. */
@@ -2223,7 +2233,7 @@ async function createPlan(target: string, text: string | undefined, path: string
   if (text !== undefined) throw usage("Text is one task's: with --file, each task in the file has its own.")
   // What the file holds comes first: one task's text in it means these options are that task's, on stdin.
   const parsed = await planSource(path)
-  const own = (['label', 'needs', 'for', 'claim', 'lease', 'no-sync'] as const).find((name) => (flags as Record<string, unknown>)[name] !== undefined && (flags as Record<string, unknown>)[name] !== false)
+  const own = (['label', 'needs', 'for', 'priority', 'claim', 'lease', 'no-sync'] as const).find((name) => (flags as Record<string, unknown>)[name] !== undefined && (flags as Record<string, unknown>)[name] !== false)
   if (own !== undefined) throw usage(`--${own} is one task's: with --file, each task in the file has its own.`)
   const board = client()
   const tasks = await planFrom(parsed, path, board)
@@ -2260,7 +2270,7 @@ async function createPlan(target: string, text: string | undefined, path: string
 }
 
 /** What a task of a plan's `--file` takes, as `tasks.createMany` does. */
-const PLAN_KEYS = ['key', 'text', 'labels', 'needs', 'for', 'noSync', 'attachments']
+const PLAN_KEYS = ['key', 'text', 'labels', 'needs', 'for', 'priority', 'noSync', 'attachments']
 
 /** The help page that says what a plan holds. */
 const planHelp = (): Recovery => ({ instruction: 'See what a plan takes', argv: [...cli(), 'tasks', 'create', '--help'] })
@@ -2547,6 +2557,8 @@ async function tasks(args: string[]): Promise<number> {
     const state = flags.state
     if (state !== undefined && state !== 'open' && state !== 'all' && !TASK_STATES.includes(state))
       throw usage(`--state takes a task's state, open, or all, and ${state} isn't one.`)
+    if (flags.order && flags.order !== 'priority') throw usage(`--order takes priority, and ${flags.order} isn't one.`)
+    if (flags.order && flags.after !== undefined) throw usage('--order priority reads every task to put them in order: it takes no --after.')
     const board = client()
     const limit = flags.limit ? Number(flags.limit) : 50
     const page = await board.tasks.list({
@@ -2556,6 +2568,7 @@ async function tasks(args: string[]): Promise<number> {
       ...(flags.by ? { by: flags.by.replace(/^@/, '') } : {}),
       ...(flags.for ? { for: profileActor((await board.me()).principal, flags.for) } : {}),
       ...(flags.after !== undefined ? { after: flags.after.replace(/^#/, '') } : {}),
+      ...(flags.order ? { order: 'priority' as const } : {}),
       limit,
     })
     // Nothing in a channel that doesn't exist is a typo, of a channel or of what to do.
@@ -2583,7 +2596,9 @@ async function tasks(args: string[]): Promise<number> {
     out(formatTasks(page.tasks))
     // A full page may not be all of them: where the next one starts.
     // A command to paste: each word quoted for a shell, the board's cursor among them, as `read` and `tail` print theirs.
-    if (page.tasks.length === limit) out(`(more not shown: ${commandLine(rerunWithout(['--after'], '--after', page.cursor))})`)
+    // In order, a page is the first of every task: more of them is a longer one.
+    if (page.tasks.length === limit && flags.order) out(limit < 500 ? `(more not shown: ${commandLine(rerunWithout(['--limit'], '--limit', String(Math.min(limit * 2, 500))))})` : '(more not shown)')
+    else if (page.tasks.length === limit) out(`(more not shown: ${commandLine(rerunWithout(['--after'], '--after', page.cursor))})`)
     return 0
   }
 
@@ -2598,6 +2613,7 @@ async function tasks(args: string[]): Promise<number> {
     const about = {
       ...(flags.needs?.length ? { needs: flags.needs.map((id) => taskId(id)) } : {}),
       ...(flags.for ? { for: profileActor((await board.me()).principal, flags.for) } : {}),
+      ...(flags.priority ? { priority: integer('--priority takes', flags.priority) } : {}),
       ...(claimFlag() ? { claim: true } : {}),
       ...(lease !== undefined ? { lease } : {}),
       ...(claimFlag() && io.claimToken !== undefined ? { token: io.claimToken } : {}),
@@ -2787,6 +2803,15 @@ async function tasks(args: string[]): Promise<number> {
       const task = await board.tasks.assign(id, profile === undefined ? null : profileActor(owner ?? (await board.me()).principal, profile))
       if (flags.json) result({ task, outcome: profile === undefined ? 'unassigned' : 'assigned' })
       else out(profile === undefined ? `unassigned ${messageRef(id)}` : `assigned ${messageRef(id)} to ${profile.toLowerCase()}`)
+      return 0
+    }
+    case 'priority': {
+      const [, n, extra] = rest
+      if (extra) throw usage(`tasks priority takes a task and an integer: ${extra} is one too many.`)
+      if (!n) throw usage('Missing its priority: an integer, higher first, such as 2, or 0 for none.', { reason: 'missing_arguments' })
+      const task = await board.tasks.priority(id, integer('A priority is', n))
+      if (flags.json) result({ task, outcome: 'set' })
+      else out(`${messageRef(id)} has priority ${task.task?.priority || 0}`)
       return 0
     }
     case 'needs': {

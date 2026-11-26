@@ -5,6 +5,7 @@ import { byVercelBot, displayText } from '../contract/bots.ts'
 import { extractMentions, isEmail, replaceMentions } from '../contract/mentions.ts'
 import { findBlocks } from '../contract/blocks.ts'
 import { shownName, type Via } from '../contract/profiles.ts'
+import { OPEN_TASK_STATES } from '../contract/schemas.ts'
 import type { CheckResult, ConformanceReport } from '../conformance/index.ts'
 
 /**
@@ -169,6 +170,7 @@ function taskState(message: MessageView, task: TaskView, names: Map<string, stri
   else if (task.state === 'failed' || task.state === 'canceled') parts.push(task.state, ...(task.reason ? [noteLine(task.reason)] : []))
   else parts.push(task.state)
   if (task.needs.length) parts.push(`needs ${task.needs.map((id) => `#${id}`).join(' ')}`)
+  if (task.priority) parts.push(`priority ${task.priority}`)
   if (task.for !== null) parts.push(`for ${profileOf(task.for)}`)
   if (task.owner !== message.by.principal) parts.push(`owner ${named(task.owner)}`)
   return parts.join(' · ')
@@ -188,7 +190,9 @@ function taskNote(message: MessageView, task: TaskView, room: number): string {
   // Its state has a column of its own, so the label that says it again is left out.
   const own = Object.entries(message.labels).filter(([key]) => !key.startsWith('board.')).map(([key, value]) => `${key}=${lineText(value)}`).join(' ')
   const needs = task.state === 'waiting' && task.needs.length ? `needs ${task.needs.map((id) => `#${id}`).join(' ')}` : ''
-  return [own, needs].filter(Boolean).join('  ')
+  // How soon claim --ready takes it matters only while it's open.
+  const priority = task.priority && (OPEN_TASK_STATES as readonly string[]).includes(task.state) ? `priority ${task.priority}` : ''
+  return [own, needs, priority].filter(Boolean).join('  ')
 }
 
 /** The widest a task's state is (`completed`), and how wide its first line's column is at least and at most. */
@@ -425,6 +429,7 @@ export function formatEvent(event: BoardEventView): string {
     case 'task.created':
     case 'task.assigned':
     case 'task.needs_changed':
+    case 'task.priority_changed':
     case 'task.ready':
     case 'task.claimed':
     case 'task.renewed':
@@ -448,12 +453,14 @@ function taskEvent(event: Extract<BoardEventView, { type: `task.${string}` }>): 
   const more = (...parts: (string | null | undefined)[]) => parts.filter((part): part is string => !!part).map((part) => ` · ${part}`).join('')
   switch (event.type) {
     case 'task.created':
-      return `created${by}${more(event.payload.needs.length ? `needs ${event.payload.needs.map((id) => `#${id}`).join(' ')}` : null, event.payload.for !== null ? `for ${profileOf(event.payload.for)}` : null)}`
+      return `created${by}${more(event.payload.needs.length ? `needs ${event.payload.needs.map((id) => `#${id}`).join(' ')}` : null, event.payload.for !== null ? `for ${profileOf(event.payload.for)}` : null, event.payload.priority ? `priority ${event.payload.priority}` : null)}`
     case 'task.assigned':
       return event.payload.for !== null ? `assigned to ${profileOf(event.payload.for)}${by}` : `unassigned${by}`
     case 'task.needs_changed':
       // What it waits for now, in place of what it waited for.
       return `needs ${event.payload.needs.length ? event.payload.needs.map((id) => `#${id}`).join(' ') : 'nothing'}${by}`
+    case 'task.priority_changed':
+      return `priority ${event.payload.priority}${by}`
     case 'task.ready':
       return 'ready'
     case 'task.expired':

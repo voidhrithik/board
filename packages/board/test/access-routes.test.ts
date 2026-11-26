@@ -169,6 +169,10 @@ const WALK: Record<RouteName, Walk> = {
     // What it would wait for is checked only once it's the caller's to change: a task it can't read stays out of sight.
     { method: 'POST', path: `/tasks/${open.task}/needs`, body: { needs: [secret.task] }, status: 403 },
   ],
+  setTaskPriority: ({ secret, open }) => [
+    { method: 'POST', path: `/tasks/${secret.task}/priority`, body: { priority: 1 }, status: 404 },
+    { method: 'POST', path: `/tasks/${open.task}/priority`, body: { priority: 1 }, status: 403 },
+  ],
   cancelTask: ({ secret, open }) => [
     { method: 'POST', path: `/tasks/${secret.task}/cancel`, body: { reason: 'mine now' }, status: 404 },
     { method: 'POST', path: `/tasks/${open.task}/cancel`, body: { reason: 'mine now' }, status: 403 },

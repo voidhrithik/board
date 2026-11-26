@@ -102,6 +102,7 @@ describe("vercel()'s tasks", () => {
       'takes label in its channel to claim a task: a caller narrowed to reading and posting claims none': "skipped: this run can't call the board with an x-board-can header",
       "takes read in a prerequisite's channel to wait for it: a caller narrowed out of it makes no task that needs it": "skipped: this run can't call the board with an x-board-can header",
       'claims the oldest ready task in a channel or its subtree that has the labels asked for, and waits for one': 'passed',
+      'takes the higher priority first when it claims the next ready task, then the oldest, lists in that order, and lets its owner change a priority whoever holds the task': 'passed',
       'shows a feed that filters on board.task=ready a task becoming ready and being claimed, and never a token': 'passed',
       'keeps labels under board. its own: a label write or a post that sets one is refused': 'passed',
     }
@@ -209,7 +210,7 @@ describe("vercel()'s tasks", () => {
     // A task is its root: its ID is the root message's, and it reads as its thread does.
     expect(fix.id).toMatch(/^msg_[0-9a-f-]{36}_1$/)
     expect(fix).toMatchObject({ channel: 'work', text: 'fix CVE-123 in acme/web', re: null, labels: { step: 'fix', 'board.task': 'ready' } })
-    expect(fix.task).toEqual({ state: 'ready', owner: JULIAN, by: JULIAN, for: null, needs: [], epoch: 0, claim: null, blocked: null, result: null, reason: null })
+    expect(fix.task).toEqual({ state: 'ready', owner: JULIAN, by: JULIAN, for: null, needs: [], epoch: 0, claim: null, blocked: null, result: null, reason: null, priority: 0 })
     // What it waits for is named by its root's ID, as the board names a task, where the API names its thread.
     expect(review.task).toMatchObject({ state: 'waiting', needs: [fix.id], for: `${JULIAN}+reviewer` })
     expect(review.labels['board.task']).toBe('waiting')
@@ -699,6 +700,47 @@ describe("vercel()'s tasks", () => {
     const trace = await julian.upload({ data: new TextEncoder().encode('trace'), name: 'trace.txt', type: 'text/plain' })
     const posted = await julian.post('work', { text: 'the worker crashes on start', attachments: [trace] })
     expect((await julian.tasks.create({ re: posted.id })).task.attachments.map((attached) => attached.id)).toEqual([trace.id])
+  })
+
+  it("sends a task's priority to the API, changes it on the API's route, and has a claim of the next and a list by priority take the higher first", async () => {
+    const api = fakeMessageboard()
+    const julian = handleOn(api)
+    const start = (await julian.poll({ channel: 'work' })).cursor
+    const { task: low } = await julian.tasks.create('work', { text: 'tidy the readme' })
+    expect(julian.wrote().body).not.toHaveProperty('priority')
+    const { task: high } = await julian.tasks.create('work', { text: 'fix the outage', priority: 2 })
+    expect(julian.wrote().body).toMatchObject({ channel: 'work', text: 'fix the outage', priority: 2 })
+    expect([low.task!.priority, high.task!.priority]).toEqual([0, 2])
+    const [batched] = await julian.tasks.createMany('work', [{ text: 'rotate the keys', priority: 1 }])
+    expect(julian.wrote().body!.tasks).toEqual([{ text: 'rotate the keys', priority: 1 }])
+    const issue = await julian.post('issues', 'export times out past 10k rows')
+    expect((await julian.tasks.create({ re: issue.id }, { priority: 3 })).task.task!.priority).toBe(3)
+    expect(julian.wrote().body).toMatchObject({ threadId: threadOf(issue.id), priority: 3 })
+    const made = (await julian.poll({ channel: 'work', after: start })).events.find((event) => event.type === 'task.created' && event.message?.id === high.id)
+    expect(made?.payload).toMatchObject({ id: high.id, priority: 2 })
+
+    // A list by priority reads every page of the API's, which lists by when each was made.
+    for (let n = 0; n < 30; n++) await julian.tasks.create('work', { text: `filler ${n}` })
+    const { task: last } = await julian.tasks.create('work', { text: 'page the on-call', priority: 2 })
+    julian.sent.length = 0
+    expect((await julian.tasks.list({ channel: 'work', order: 'priority', limit: 3 })).tasks.map((listed) => listed.message.id)).toEqual([high.id, last.id, batched!.id])
+    expect(julian.sent.filter((request) => request.method === 'GET' && request.path === '/tasks').map((request) => request.query.cursor?.[0] ?? null)).toEqual([null, '25'])
+
+    const { cursor } = await julian.poll({ channel: 'work' })
+    const lowered = await julian.tasks.priority(high.id, -1)
+    expect(julian.wrote()).toMatchObject({ method: 'POST', version: 2, path: `/tasks/${threadOf(high.id)}/priority` })
+    expect(julian.wrote().body).toEqual({ operationId: expect.any(String), priority: -1 })
+    expect(lowered.task).toMatchObject({ state: 'ready', priority: -1 })
+    const changes = (await julian.poll({ channel: 'work', after: cursor })).events.filter((event) => event.message?.id === high.id)
+    expect(changes.map((event) => [event.type, event.payload])).toEqual([['task.priority_changed', { id: high.id, thread: threadOf(high.id), priority: -1, by: { actor: JULIAN, principal: JULIAN, profile: null } }]])
+
+    // The API's claim of the next ready task goes by it: the higher first, then the oldest.
+    const next = async () => (await julian.tasks.claim({ channel: 'work', lease: 60 }))?.task.id
+    expect([await next(), await next(), await next()]).toEqual([last.id, batched!.id, low.id])
+    // What the API refuses is a board's: someone else's task, and a finished one's.
+    await expect(handleOn(api, 'project:prj_web:production').tasks.priority(high.id, 1)).rejects.toMatchObject({ status: 403, code: 'task_not_owned' })
+    await (await julian.tasks.claim(high.id, { lease: 60 })).complete()
+    await expect(julian.tasks.priority(high.id, 1)).rejects.toMatchObject({ status: 409, code: 'task_finished' })
   })
 
   it("changes what a task needs on the API's route, named by their threads, and shows the change as the board's event", async () => {

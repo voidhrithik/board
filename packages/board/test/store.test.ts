@@ -225,7 +225,7 @@ describe('the inspector store', () => {
     message(id, {
       channel: 'work',
       labels: { 'board.task': overrides.state ?? 'ready' },
-      task: { state: 'ready', owner: PRINCIPAL, by: ME, for: null, needs: [], epoch: 0, claim: null, blocked: null, result: null, reason: null, ...overrides },
+      task: { state: 'ready', owner: PRINCIPAL, by: ME, for: null, needs: [], epoch: 0, claim: null, blocked: null, result: null, reason: null, priority: 0, ...overrides },
       ...root,
     }) as store.TaskRoot
   const claimedBy = (actor: string, until: string, epoch = 1): Partial<TaskView> => ({ state: 'claimed', epoch, claim: { actor, until } })

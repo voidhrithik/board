@@ -150,7 +150,9 @@ export const options = {
   // Tasks.
   state: { type: 'string', value: 'state', description: 'in a state: waiting, ready, claimed, blocked, completed, failed, canceled, open, or all (default: open)' },
   needs: { type: 'string', multiple: true, value: 'id', description: 'wait for a task to complete first' },
-  ready: { type: 'boolean', description: 'the oldest ready task in a channel, or under a prefix (work/)' },
+  ready: { type: 'boolean', description: 'the next ready task in a channel, or under a prefix (work/): the higher priority first, then the oldest' },
+  priority: { type: 'string', value: 'n', description: 'how soon claim --ready takes it: an integer, higher first (default: 0)' },
+  order: { type: 'string', value: 'order', description: 'priority: in the order claim --ready takes them, reading every task' },
   from: { type: 'string', multiple: true, value: 'id', description: "with --ready: take this owner's tasks too, by their ID" },
   wait: { type: 'string', value: 'duration', description: 'with --ready: how long to wait for one, e.g. 10m' },
   lease: { type: 'string', value: 'duration', description: 'how long to hold it: 30s to 1h (default: 15m, or what the board gives)' },
@@ -569,7 +571,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
   {
     group: 'agents',
     name: 'tasks',
-    description: 'open tasks, oldest first: threads agents are to do, each with a state the board keeps',
+    description: 'open tasks, oldest first, or with --order priority as claim --ready takes them: threads agents are to do, each with a state the board keeps',
     arguments: [{ name: 'channel', required: false, description: 'a channel, or a path prefix (work/); every channel without one' }],
     options: [
       option('state'),
@@ -578,11 +580,13 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
       option('for', 'assigned to a profile of yours', 'profile'),
       option('after', 'after a cursor an earlier page printed', 'cursor'),
       option('limit', 'tasks to list (default: 50)'),
+      option('order'),
     ],
     runsWithoutSubcommand: true,
     examples: [
       { name: "list a queue's open tasks", value: 'tasks work/' },
       { name: 'list what is ready to fix', value: 'tasks work/ --state ready --label step=fix' },
+      { name: 'list what claim --ready takes next', value: 'tasks work/ --state ready --order priority' },
     ],
     subcommands: [
       {
@@ -596,15 +600,17 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
           option('label', 'label it, to route it', 'k=v'),
           option('needs'),
           option('for', 'only this profile of yours claims it', 'profile'),
+          option('priority'),
           claimNow,
           option('lease', 'with --claim: how long to hold it'),
-          option('file', 'a plan, from a JSON file (- reads stdin): an array of tasks, each { key?, text, labels?, needs?, for?, noSync?, attachments? }, all made, in as many writes as it takes. needs takes a key of the plan ("fix" or {"key": "fix"}) or a task that\'s there by its ID ("812" or {"id": "812"})'),
+          option('file', 'a plan, from a JSON file (- reads stdin): an array of tasks, each { key?, text, labels?, needs?, for?, priority?, noSync?, attachments? }, all made, in as many writes as it takes. needs takes a key of the plan ("fix" or {"key": "fix"}) or a task that\'s there by its ID ("812" or {"id": "812"})'),
           option('no-sync'),
           option('idempotency-key', 'sending the same one again makes it once'),
         ],
         examples: [
           { name: 'hand a fix to whoever takes fixes', value: 'tasks create work "fix CVE-123 in acme/web" --label step=fix' },
           { name: 'a review that waits for it', value: 'tasks create work "review the fix for CVE-123" --label step=review --needs 812' },
+          { name: 'one to take before the rest', value: 'tasks create work "fix the outage" --priority 2' },
           { name: 'make a task of a thread that is there', value: 'tasks create 812' },
           { name: 'a plan of tasks that wait for each other', value: 'tasks create work --file plan.json --idempotency-key migration-7' },
         ],
@@ -699,6 +705,16 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
         examples: [
           { name: 'wait for two tasks', value: 'tasks needs 814 812 813' },
           { name: 'wait for nothing', value: 'tasks needs 814 --none' },
+        ],
+      },
+      {
+        name: 'priority',
+        description: 'set how soon claim --ready takes a task, as its owner, whoever holds it',
+        arguments: [task(), { name: 'n', required: true, description: 'an integer, higher first: 0 for none, and below 0 after the rest' }],
+        options: [],
+        examples: [
+          { name: 'take it before the rest', value: 'tasks priority 816 2' },
+          { name: 'take it after the rest', value: 'tasks priority 816 -1' },
         ],
       },
       {

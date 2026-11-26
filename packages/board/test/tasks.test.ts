@@ -8,7 +8,8 @@ import type { Can } from '../src/access/index.ts'
 import type { Middleware, Watcher } from '../src/server/index.ts'
 import type { BoardEvent } from '../src/contract/events.ts'
 import { block } from '../src/contract/blocks.ts'
-import { foldMessages, type MessagesState } from '../src/contract/folds.ts'
+import { foldMessages, type MessagesState, type Task } from '../src/contract/folds.ts'
+import { taskView } from '../src/server/feed.ts'
 import { memory } from '../src/store/memory.ts'
 import { http } from '../src/backend-http/index.ts'
 import { board as projectBoard, BOARD_URL, caller, deploymentToken, personToken, testBoard, workflowToken } from './harness.ts'
@@ -93,7 +94,7 @@ describe('a task', () => {
     expect(made.status).toBe(201)
     const root = made.body.task as MessageView
     expect(root).toMatchObject({ channel: 'work', text: 'fix CVE-123 in acme/web', re: null, by: { actor: ADA }, labels: { step: 'fix', 'board.task': 'ready' } })
-    expect(root.task).toEqual({ state: 'ready', owner: ADA, by: ADA, for: null, needs: [], epoch: 0, claim: null, blocked: null, result: null, reason: null })
+    expect(root.task).toEqual({ state: 'ready', owner: ADA, by: ADA, for: null, needs: [], epoch: 0, claim: null, blocked: null, result: null, reason: null, priority: 0 })
     expect(made.body.claim).toBeUndefined()
 
     // Anyone who reads the channel reads it, replies in it, and finds it by its state.
@@ -1236,6 +1237,75 @@ describe('claiming the next ready task', () => {
   })
 })
 
+describe('a priority', () => {
+  it('is 0 unless set, and makes a claim of the next ready task take the higher first, then the oldest, after one assigned to the caller', async () => {
+    const { ada, board } = setup()
+    const fixer = person(board, 'ada', { 'x-board-profile': 'fixer' })
+    const low = await task(ada, 'tidy the readme')
+    const high = await task(ada, 'fix the outage', { priority: 2 })
+    const mid = await task(ada, 'rotate the keys', { priority: 1 })
+    const alsoHigh = await task(ada, 'page the on-call', { priority: 2 })
+    const below = await task(ada, 'someday', { priority: -1 })
+    expect([low, high, below].map((made) => made.task!.priority)).toEqual([0, 2, -1])
+    // One assigned to the caller comes first, whatever the pool's, and the higher of those first.
+    const mine = await task(ada, 'for the fixer', { for: `${ADA}+fixer` })
+    const mineHigh = await task(ada, 'for the fixer, first', { for: `${ADA}+fixer`, priority: 1 })
+    const taken = async () => (await fixer('POST', '/tasks/claim', { channel: 'work' })).body.task?.id ?? null
+    expect([await taken(), await taken()]).toEqual([mineHigh.id, mine.id])
+    expect([await taken(), await taken(), await taken(), await taken(), await taken(), await taken()]).toEqual([high.id, alsoHigh.id, mid.id, low.id, below.id, null])
+    // A batch's tasks and a thread made a task take one too.
+    const [batched] = (await ada('POST', '/tasks/batch', { channel: 'work', tasks: [{ text: 'batched', priority: 3 }] })).body.tasks as MessageView[]
+    expect(batched!.task!.priority).toBe(3)
+    const issue = (await ada('POST', '/messages', { channel: 'issues', text: 'export times out' })).body.message as MessageView
+    expect((await ada('POST', '/tasks', { re: issue.id, priority: 4 })).body.task.task.priority).toBe(4)
+    expect(code(await ada('POST', '/tasks', { channel: 'work', text: 'x', priority: 1.5 }))).toEqual([400, 'invalid_request'])
+  })
+
+  it('lists in claim order with order=priority, reading to the end, and takes no after', async () => {
+    const { ada } = setup()
+    const low = await task(ada, 'tidy the readme')
+    const high = await task(ada, 'fix the outage', { priority: 2 })
+    const mid = await task(ada, 'rotate the keys', { priority: 1 })
+    const alsoHigh = await task(ada, 'page the on-call', { priority: 2 })
+    const ids = async (query: string) => ((await ada('GET', `/tasks${query}`)).body.tasks as { message: MessageView }[]).map((t) => t.message.id)
+    expect(await ids('')).toEqual([low.id, high.id, mid.id, alsoHigh.id])
+    expect(await ids('?order=priority')).toEqual([high.id, alsoHigh.id, mid.id, low.id])
+    expect(await ids('?order=priority&limit=2')).toEqual([high.id, alsoHigh.id])
+    expect(code(await ada('GET', `/tasks?order=priority&after=${low.id}`))).toEqual([400, 'invalid_request'])
+    expect(code(await ada('GET', '/tasks?order=priority&latest=1'))).toEqual([400, 'invalid_request'])
+    expect(code(await ada('GET', '/tasks?order=newest'))).toEqual([400, 'invalid_request'])
+  })
+
+  it("changes as its owner's or manage's, whoever holds the task, and never once it's finished", async () => {
+    const { ada, bo, board } = setup()
+    const fix = await task(ada, 'fix CVE-123')
+    let { cursor } = (await ada('GET', '/events')).body
+    const raised = await ada('POST', `/tasks/${fix.id}/priority`, { priority: 3 })
+    expect(raised.status).toBe(200)
+    expect(raised.body.task).toMatchObject({ id: fix.id, task: { state: 'ready', priority: 3 } })
+    const [changed] = (await events(ada, cursor)).filter((event) => event.message?.id === fix.id)
+    expect(changed).toMatchObject({ type: 'task.priority_changed', payload: { id: fix.id, thread: fix.thread, priority: 3, by: { actor: ADA, principal: ADA, profile: null } } })
+    // The same priority changes nothing.
+    ;({ cursor } = (await ada('GET', '/events')).body)
+    expect((await ada('POST', `/tasks/${fix.id}/priority`, { priority: 3 })).status).toBe(200)
+    expect(await events(ada, cursor)).toEqual([])
+    // A claim was taken on what the task says: it changes under one, which holds.
+    await claim(bo, fix.id)
+    expect((await ada('POST', `/tasks/${fix.id}/priority`, { priority: 0 })).body.task.task).toMatchObject({ state: 'claimed', priority: 0 })
+    // It's the owner's: a deployment that manages nothing is refused, and a person, who manages, changes it.
+    expect(code(await web(board)('POST', `/tasks/${fix.id}/priority`, { priority: 1 }))).toEqual([403, 'task_not_owned'])
+    expect((await bo('POST', `/tasks/${fix.id}/priority`, { priority: 1 })).body.task.task.priority).toBe(1)
+    expect(code(await ada('POST', `/tasks/${fix.id}/priority`, { priority: 'high' }))).toEqual([400, 'invalid_request'])
+    const note = (await ada('POST', '/messages', { channel: 'work', text: 'not a task' })).body.message as MessageView
+    expect(code(await ada('POST', `/tasks/${note.id}/priority`, { priority: 1 }))).toEqual([404, 'not_a_task'])
+    // A finished task's stays as it was.
+    const done = await task(ada, 'done')
+    await bo('POST', `/tasks/${done.id}/complete`, await claim(bo, done.id))
+    expect(code(await ada('POST', `/tasks/${done.id}/priority`, { priority: 2 }))).toEqual([409, 'task_finished'])
+    expect((await read(ada, done.id)).task!.priority).toBe(0)
+  })
+})
+
 describe('listing tasks', () => {
   it('lists open tasks oldest first, as thread summaries, and others by their state', async () => {
     const { ada, bo } = setup()
@@ -1819,6 +1889,16 @@ describe("the fold, for whoever folds the board's events themselves", () => {
     // And it's no version of a task it didn't change, or of a reply.
     expect(folded(created, claimed(1), rewired).byId[1]!.version).toBe(4)
     expect(folded(['task.needs_changed', { id: 2, thread: 'root', needs: [7], by }]).byId[2]!.task).toBeUndefined()
+  })
+
+  it('folds a priority from task.created and task.priority_changed, and keeps 0 for one made without', () => {
+    const made = folded(created).byId[1]!.task!
+    expect(made.priority).toBe(0)
+    const raised = folded(['task.created', { ...about, needs: [], for: null, priority: 2, by }], ['task.priority_changed', { ...about, priority: 5, by }])
+    expect(raised.byId[1]!.task!.priority).toBe(5)
+    // A task kept before priorities, as the tables hold it, shows 0.
+    const { priority: _priority, ...before } = made
+    expect(taskView(before as Task).priority).toBe(0)
   })
 
   it('keeps tasks on roots that are there: a reply is no task, and a deleted root wears no label', () => {

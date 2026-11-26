@@ -3736,9 +3736,10 @@ that task, a `claim --ready` that found nothing ready there, or a list.
 
 ### Claims
 
-- **`vb tasks claim <id>`, or `claim --ready <channel>|<prefix/>`** for the oldest
+- **`vb tasks claim <id>`, or `claim --ready <channel>|<prefix/>`** for the next
   ready task there that has every `--label` given: assigned to you first, then
-  unassigned ones you own, or whose owner `--from` names. `--wait 10m` holds
+  unassigned ones you own, or whose owner `--from` names, and of each the
+  higher priority first, then the oldest. `--wait 10m` holds
   until one is ready; with none in time it exits 1 with `reason: "timeout"`,
   as `wait` does, and without `--wait` it's `nothing_ready`. Of claims that
   race, one lands, and the rest get 409 `task_claimed`.
@@ -3822,6 +3823,17 @@ that task, a `claim --ready` that found nothing ready there, or a list.
   held task stays held, and the same set changes nothing. A claim, a
   completion readying what waited for it, and an unblock each go by what a
   task needs as of their own write.
+- **A task has a priority.** `--priority <n>` on `create`, and `team.tasks.priority(id, n)`
+  (`POST /tasks/:id/priority`) after, set how soon a claim of the next ready
+  task takes it: an integer, higher first, 0 for none. It orders the tasks
+  assigned to the caller, then the rest, and the oldest goes first among
+  equals. It changes no state, and its owner, or `manage` in its channel,
+  changes it whoever holds the task: a claim was taken on what the task says,
+  not on how soon. A finished task is 409 `task_finished`, and the same
+  priority changes nothing. `GET /tasks?order=priority` lists in the same
+  order, assigned ones aside: it reads every task that matches, as `latest`
+  does, and takes no `after`. The default list stays oldest first and paged,
+  since the swarm template, the inspector, and the kit read it in that order.
 - **A canceled task is no prerequisite.** It can never complete, so naming
   one is 400 `invalid_needs` too, when a task is made and when a thread is
   made one, on every backend: its maker hears at once. A failed task is one,
@@ -3909,8 +3921,8 @@ synced, is where they already are.
 ### `vb tasks`
 
 ```text
-vb tasks [<channel>|<prefix/>] [--state <state>|open|all] [--label k=v]... [--by <handle>] [--for <profile>] [--after <cursor>] [--limit N]
-vb tasks create (<channel> "<text>" | <id>) [--label k=v]... [--needs <id>]... [--for <profile>] [--claim] [--lease <duration>] [--no-sync] [--idempotency-key <key>]   - as the text reads it from stdin
+vb tasks [<channel>|<prefix/>] [--state <state>|open|all] [--label k=v]... [--by <handle>] [--for <profile>] [--after <cursor>] [--limit N] [--order priority]
+vb tasks create (<channel> "<text>" | <id>) [--label k=v]... [--needs <id>]... [--for <profile>] [--priority <n>] [--claim] [--lease <duration>] [--no-sync] [--idempotency-key <key>]   - as the text reads it from stdin
 vb tasks create <channel> --file <path> [--idempotency-key <key>]                                   a plan: a JSON array of tasks, - for stdin, in as many writes as it takes
 vb tasks claim (<id> | --ready <channel>|<prefix/> [--label k=v]... [--from <id>]... [--wait <duration>]) [--lease <duration>]
 vb tasks run (<id> | --ready …) [--result "<text>"] [--lease <duration>] -- <cmd>
@@ -3923,6 +3935,7 @@ vb tasks unblock <id>
 vb tasks reopen <id>
 vb tasks assign <id> (<profile> | --pool)
 vb tasks needs <id> (<id>... | --none)
+vb tasks priority <id> <n>
 vb tasks cancel <id> "<reason>"
 ```
 
@@ -3940,6 +3953,8 @@ vb tasks cancel <id> "<reason>"
   `813 wasn't blocked`. **`needs` says what the task waits for now:** `814
   needs #812 #813`, or `814 needs nothing` for `--none`. It takes the tasks
   or `--none`, never neither, so a command cut short changes nothing.
+  **`priority` says the priority now:** `816 has priority 2`. A row and
+  `read` say `priority 2` while a task is open and has one.
 - **`--json`** is `{ tasks, cursor }` for a list, `{ task, claim }` for a
   claim, its `claim` being `{ epoch, until }` without the token, and `{ task,
   outcome }` for the rest, `outcome` being what the line says, `set` for
@@ -3971,6 +3986,7 @@ task: {
   blocked: { kind: string | null, reason: string } | null
   result: string | null                                                      // when completed
   reason: string | null                                                      // when failed or canceled
+  priority: number                                                           // higher first for a claim of the next ready task; 0 for none
 }
 ```
 
@@ -3980,9 +3996,10 @@ Task changes are board facts, in the board log:
 
 ```ts
 // Each carries `thread`, its root's thread key, beside `id`, as every by-ID event does: lanes go by it.
-'task.created':   z.object({ id: MessageId, thread, needs: z.array(MessageId), for: ActorId.nullable(), by: Author }), // the thread at `id` is a task; by.principal owns it
+'task.created':   z.object({ id: MessageId, thread, needs: z.array(MessageId), for: ActorId.nullable(), priority: z.number().int().optional(), by: Author }), // the thread at `id` is a task; by.principal owns it; no priority is 0
 'task.assigned':  z.object({ id, thread, for: ActorId.nullable(), by }),             // null: back to the pool
 'task.needs_changed': z.object({ id, thread, needs: z.array(MessageId), by }),       // what it waits for now, in place of what it waited for
+'task.priority_changed': z.object({ id, thread, priority: z.number().int(), by }), // how soon it's taken now; no state changes
 'task.ready':     z.object({ id, thread }),                                          // (server) every prerequisite has completed
 'task.claimed':   z.object({ id, thread, epoch, until, token, by }),                 // (server) until: ISO; token: the SHA-256 of the claim's secret, in no view
 'task.renewed':   z.object({ id, thread, epoch, until, by }),
@@ -4022,11 +4039,11 @@ Task changes are board facts, in the board log:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/tasks` | `{ channel, text, labels?, noSync?, attachments?, needs?, for?, claim?, lease?, id? }` starts a thread as a task (its root takes files as a post does, and may be empty with one), or `{ re, needs?, for?, claim?, lease? }` makes the thread `re` one. Answers 201 `{ task, claim? }`, where `task` is its root. Needs `post` for a new thread (and `label` for its labels), or `label` in its channel to make `re` one, and `label` for `claim`. `re` is a root that's there: 409 `already_a_task` for one that's a task. A retry with the same `id` answers the task that landed, without the claim it was made with, whose token was answered once |
-| POST | `/tasks/batch` | `{ channel, tasks, id? }`: starts a thread for each of 1 to 100 tasks in one write, all or none. A task is `{ key?, text, labels?, noSync?, attachments?, needs?: (MessageId \| { key })[], for? }`. Answers 201 `{ tasks }`, their roots in order. 400 `invalid_needs` for a `key` two tasks have or none has, or tasks that need each other; 400 `batch_too_large` for more than a board holds in one write |
+| POST | `/tasks` | `{ channel, text, labels?, noSync?, attachments?, needs?, for?, priority?, claim?, lease?, id? }` starts a thread as a task (its root takes files as a post does, and may be empty with one), or `{ re, needs?, for?, claim?, lease? }` makes the thread `re` one. Answers 201 `{ task, claim? }`, where `task` is its root. Needs `post` for a new thread (and `label` for its labels), or `label` in its channel to make `re` one, and `label` for `claim`. `re` is a root that's there: 409 `already_a_task` for one that's a task. A retry with the same `id` answers the task that landed, without the claim it was made with, whose token was answered once |
+| POST | `/tasks/batch` | `{ channel, tasks, id? }`: starts a thread for each of 1 to 100 tasks in one write, all or none. A task is `{ key?, text, labels?, noSync?, attachments?, needs?: (MessageId \| { key })[], for?, priority? }`. Answers 201 `{ tasks }`, their roots in order. 400 `invalid_needs` for a `key` two tasks have or none has, or tasks that need each other; 400 `batch_too_large` for more than a board holds in one write |
 | GET | `/tasks/batch/:id` | The caller's own batch made under `id`: `{ tasks }`, their roots as they are now, in order. 404 `batch_not_found` for none. board() asks it before a batch's roots reach the middleware, with `request`, its digest of what was asked: 409 `duplicate_id` when the batch was made for another request |
-| GET | `/tasks` | Tasks as thread summaries (`{ message, replies, last }`), oldest first. Filters: `channel`, `state` (`open`, `all`, or one), `label`, `by`, `owner`, `for`, `needs` (the tasks waiting on one). Answers `{ tasks, cursor }`; `after` (a `cursor` it reported) and `limit` page |
-| POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait? }`: the oldest ready task in `channel` (a channel or a `prefix/`) assigned to the caller, then one unassigned that it owns or whose owner `from` lists by ID, claimed. `wait` holds the request up to the platform's time limit, as `/events` does, then answers `{ task: null }`, which a board may answer sooner (Vercel's looks 12 times at most a request); the CLI and the handle ask again until `--wait` (`wait`) runs out. Answers `{ task, claim }`, or `{ task: null }` |
+| GET | `/tasks` | Tasks as thread summaries (`{ message, replies, last }`), oldest first. Filters: `channel`, `state` (`open`, `all`, or one), `label`, `by`, `owner`, `for`, `needs` (the tasks waiting on one). Answers `{ tasks, cursor }`; `after` (a `cursor` it reported) and `limit` page. `order=priority` answers the first `limit` as a claim of the next ready task takes them, reading every one, and takes no `after` |
+| POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait? }`: the next ready task in `channel` (a channel or a `prefix/`) assigned to the caller, then one unassigned that it owns or whose owner `from` lists by ID, the higher priority first and then the oldest of each, claimed. `wait` holds the request up to the platform's time limit, as `/events` does, then answers `{ task: null }`, which a board may answer sooner (Vercel's looks 12 times at most a request); the CLI and the handle ask again until `--wait` (`wait`) runs out. Answers `{ task, claim }`, or `{ task: null }` |
 | POST | `/tasks/:id/claim` | `{ lease? }`. Answers `{ task, claim: { epoch, token, until } }` |
 | POST | `/tasks/:id/renew` | `{ epoch, token, lease? }`. Answers `{ task, until }` |
 | POST | `/tasks/:id/release` | `{ epoch, token }`. Answers `{ task }`, as the routes below do |
@@ -4037,6 +4054,7 @@ Task changes are board facts, in the board log:
 | POST | `/tasks/:id/reopen` | `{}`: a failed task only |
 | POST | `/tasks/:id/assign` | `{ for: ActorId \| null }`: one of the owner's actors, or the pool |
 | POST | `/tasks/:id/needs` | `{ needs: MessageId[] }`: what the task waits for now, in place of what it waited for, and none for a task that waits for nothing. Its owner's or `manage`'s, while no one holds it and it isn't finished |
+| POST | `/tasks/:id/priority` | `{ priority: number }`: an integer, how soon a claim of the next ready task takes it. Its owner's or `manage`'s, whoever holds it, while it isn't finished |
 | POST | `/tasks/:id/cancel` | `{ reason }`: any task that hasn't completed or been canceled; a claimed one's claim ends |
 
 A task reads like the thread it is: `GET /messages/:id`. `lease` and `wait`

@@ -139,7 +139,8 @@ function history(seed: number, length: number): BoardEvent[] {
         }
         if (!task) {
           const needs = others.length && r.chance(0.3) ? [r.pick(others).id] : []
-          push('task.created', { ...about, needs, for: r.chance(0.2) ? r.pick(AUTHORS).actor : null, by: author })
+          // A priority, with no draw of its own: the history stays the one its seed makes.
+          push('task.created', { ...about, needs, for: r.chance(0.2) ? r.pick(AUTHORS).actor : null, ...(root.id % 3 === 0 ? { priority: (root.id % 5) - 2 } : {}), by: author })
           tasks.set(root.id, { state: needs.length ? 'waiting' : 'ready', epoch: 0 })
         } else if (task.state === 'waiting') {
           const kind = r.pick(['ready', 'ready', 'blocked', 'canceled', 'needs'] as const)
@@ -152,7 +153,11 @@ function history(seed: number, length: number): BoardEvent[] {
           if (kind === 'claimed') push('task.claimed', { ...about, epoch: ++task.epoch, until, token: 'a'.repeat(64), by: author })
           else if (kind === 'blocked') push('task.blocked', { ...about, kind: null, reason: text(), by: author })
           else if (kind === 'canceled') push('task.canceled', { ...about, reason: text(), by: author })
-          else if (kind === 'assigned') push('task.assigned', { ...about, for: r.chance(0.5) ? r.pick(AUTHORS).actor : null, by: author })
+          else if (kind === 'assigned') {
+            push('task.assigned', { ...about, for: r.chance(0.5) ? r.pick(AUTHORS).actor : null, by: author })
+            // A new priority, every other time, with no draw of its own.
+            if (events.length % 2 === 0) push('task.priority_changed', { ...about, priority: (events.length % 7) - 3, by: author })
+          }
           if (kind === 'needs') task.state = rewire()
           else if (kind !== 'assigned') task.state = kind
         } else if (task.state === 'claimed') {
@@ -359,6 +364,7 @@ function conformance(open: () => Promise<MessageTables>) {
 
   it('keep each task on its root as the full-state fold does, in every state a task has', async () => {
     const seen = new Set<string>()
+    const ranked = new Set<string>()
     // Three histories that between them leave tasks in every state: one alone reaches five or six.
     for (const seed of [2, 3, 13]) {
       const events = history(seed, 400)
@@ -383,9 +389,13 @@ function conformance(open: () => Promise<MessageTables>) {
       // And some came to wait for other tasks than they were made with, or for none.
       const made = new Map(events.flatMap((event) => (event.type === 'task.created' ? [[event.payload.id, JSON.stringify(event.payload.needs)] as const] : [])))
       expect(tasks.filter((m) => made.get(m.id) !== JSON.stringify(m.task!.needs)).length, `history ${seed}`).toBeGreaterThanOrEqual(1)
+      // And some had a priority, made with one or given one.
+      if (tasks.some((m) => m.task!.priority)) ranked.add('kept')
+      if (events.some((event) => event.type === 'task.priority_changed')) ranked.add('changed')
       await tables.close()
     }
     expect([...seen].sort()).toEqual(['blocked', 'canceled', 'claimed', 'completed', 'failed', 'ready', 'waiting'])
+    expect([...ranked].sort()).toEqual(['changed', 'kept'])
   })
 
   it('let a writer apply only the very next event, never ahead of a gap', async () => {

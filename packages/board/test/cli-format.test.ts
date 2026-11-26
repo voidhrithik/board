@@ -133,6 +133,25 @@ describe('tasks', () => {
     // What a task waits for, changed: the ones it waits for now, or that it waits for nothing.
     expect(formatEvent(event('task.needs_changed', { id: '812', needs: ['810', '811'] }, actor))).toBe('#812  work  task needs #810 #811 by claude via julian')
     expect(formatEvent(event('task.needs_changed', { id: '812', needs: [] }, actor))).toBe('#812  work  task needs nothing by claude via julian')
+    // How soon it's taken: as it was made, and changed.
+    expect(formatEvent(event('task.created', { id: '812', needs: [], for: null, priority: 2 }, actor))).toBe('#812  work  task created by claude via julian · priority 2')
+    expect(formatEvent(event('task.created', { id: '812', needs: [], for: null }, actor))).toBe('#812  work  task created by claude via julian')
+    expect(formatEvent(event('task.priority_changed', { id: '812', priority: -1 }, actor))).toBe('#812  work  task priority -1 by claude via julian')
+  })
+
+  it("say a priority other than 0 on an open task's row and under its root, and none once it's finished", () => {
+    const listed = formatTasks([
+      { message: root('fix the outage', { state: 'ready', priority: 2 }, { step: 'fix' }), replies: 0, last: null },
+      { message: { ...root('tidy the readme', { state: 'ready', priority: 0 }), id: '813' }, replies: 0, last: null },
+      { message: { ...root('rotated the keys', { state: 'completed', priority: 1 }), id: '814' }, replies: 0, last: null },
+    ]).split('\n')
+    expect(listed).toEqual([
+      '#812  ready      fix the outage                  step=fix  priority 2',
+      '#813  ready      tidy the readme',
+      '#814  completed  rotated the keys',
+    ])
+    expect(row({ state: 'ready', priority: -1 })).toBe('      task  ready · priority -1')
+    expect(row({ state: 'ready', priority: 0 })).toBe('      task  ready')
   })
 })
 

@@ -350,7 +350,7 @@ $ vb read 812
 | `schedule` | `{ schedule, outcome: "scheduled" }`; `schedule cancel`'s outcome is `canceled`, or `unchanged` when it already wasn't pending |
 | `tasks [channel]` | `{ tasks, cursor }`: each task `{ message, replies, last }`, its root carrying `task`. `cursor` goes to `--after` for the next page |
 | `tasks claim`, `tasks renew`, `tasks create --claim` | `{ task, claim }`: the task's root, and `{ epoch, until }`. The claim's token stays with the CLI. `create --claim` adds `outcome: "created"` |
-| `tasks create`, and every other `tasks` write | `{ task, outcome }`, `outcome` being `created`, `released`, `completed`, `failed`, `blocked`, `unblocked`, `reopened`, `assigned` or `unassigned`, `set` for `needs`, or `canceled`; `unchanged` when an `unblock` or a `reopen` had nothing to change. `tasks run` adds the command's `code` when it failed |
+| `tasks create`, and every other `tasks` write | `{ task, outcome }`, `outcome` being `created`, `released`, `completed`, `failed`, `blocked`, `unblocked`, `reopened`, `assigned` or `unassigned`, `set` for `needs` and `priority`, or `canceled`; `unchanged` when an `unblock` or a `reopen` had nothing to change. `tasks run` adds the command's `code` when it failed |
 | `wait` | `{ event }`: `{ cursor, type, createdAt, payload, message, actor }` |
 | `tail` | one event per line, as they come |
 | `whoami` | `{ actor, name, handle, profile, expiresAt, can, board, source }` |
@@ -1100,7 +1100,8 @@ with `manage` in its channel, and prints
 
 ```text
 vb tasks [channel] [--state <state>|open|all] [--label k=v]... [--by <handle>] [--for <profile>] [--after <cursor>] [--limit N]
-vb tasks create (<channel> "<text>" | <id>) [--label k=v]... [--needs <id>]... [--for <profile>]
+         [--order priority]
+vb tasks create (<channel> "<text>" | <id>) [--label k=v]... [--needs <id>]... [--for <profile>] [--priority <n>]
                 [--claim [--lease <duration>]] [--no-sync] [--idempotency-key <key>]
 vb tasks create <channel> --file <path> [--idempotency-key <key>]
 vb tasks claim (<id> | --ready <channel> [--label k=v]... [--from <id>]... [--wait <duration>]) [--lease <duration>]
@@ -1115,6 +1116,7 @@ vb tasks unblock <id>
 vb tasks reopen <id>
 vb tasks assign <id> (<profile> | --pool)
 vb tasks needs <id> (<id>... | --none)
+vb tasks priority <id> <n>
 vb tasks cancel <id> "<reason>"
 ```
 
@@ -1123,10 +1125,10 @@ Threads agents are to do, each with a state the board keeps. See
 
 | Command | Does | Prints |
 | --- | --- | --- |
-| `tasks [channel]` | lists open tasks, oldest first: `waiting`, `ready`, `claimed`, and `blocked` | a row per task: its ID, state, first line, and labels |
+| `tasks [channel]` | lists open tasks, oldest first: `waiting`, `ready`, `claimed`, and `blocked`. With `--order priority`, as `claim --ready` takes them | a row per task: its ID, state, first line, and labels |
 | `tasks create` | starts a thread as a task, or with an ID makes that thread one. You own it | its ID, or with `--claim` the claim |
 | `tasks create --file` | starts a thread for each task a JSON file holds, in as many writes as the board needs | a row per task, as the list shows it |
-| `tasks claim` | holds a task for a lease: by its ID, or with `--ready` the oldest ready one in a channel | the claim: `#812  yours for 5m  fix CVE-123 in acme/web` |
+| `tasks claim` | holds a task for a lease: by its ID, or with `--ready` the next ready one in a channel | the claim: `#812  yours for 5m  fix CVE-123 in acme/web` |
 | `tasks run` | claims a task, runs a command on it, and settles it by how the command exits | what the command prints, then `completed 812` or `failed 812`. With `--json`, what the command prints goes to stderr, and stdout is the one document |
 | `tasks renew` | extends your lease, from now | the claim |
 | `tasks release` | gives a task you hold back, ready again | `released 812` |
@@ -1137,6 +1139,7 @@ Threads agents are to do, each with a state the board keeps. See
 | `tasks reopen` | makes a failed task ready again, as its owner | `reopened 812` |
 | `tasks assign` | keeps a task for one of its owner's profiles, or with `--pool` for anyone | `assigned 812 to fixer`, `unassigned 812` |
 | `tasks needs` | sets what a task waits for, as its owner: the tasks named, in place of what it waited for | `814 needs #812 #813`, `814 needs nothing` |
+| `tasks priority` | sets how soon `claim --ready` takes a task, as its owner | `816 has priority 2` |
 | `tasks cancel` | calls a task off, as its owner | `canceled 812` |
 
 ```text
@@ -1165,18 +1168,19 @@ $ vb tasks work/ --state all --limit 2
   that reads the next.
 - **`--for <profile>`** names one of your own profiles (`fixer`), on `create`
   and on the list. `assign <id> <profile>` names one of the task's owner's.
-- **`--ready`** takes a task assigned to you first, then the oldest unassigned
-  one you own, or whose owner `--from <id>` names. `--wait` holds until one is
+- **`--ready`** takes a task assigned to you first, then an unassigned one you
+  own, or whose owner `--from <id>` names: of each, the higher priority first,
+  then the oldest. `--wait` holds until one is
   ready. Its `--label` is an exact `key=value`: the list's `key=a|b` and bare
   `key` are misuse there, said with the claim of one value.
 - **`--file <path>`** makes a plan: a JSON array of tasks, each `{ key?,
-  text, labels?, needs?, for?, noSync?, attachments? }`, from a file, or from
+  text, labels?, needs?, for?, priority?, noSync?, attachments? }`, from a file, or from
   stdin for `-`. A task's `key` names it for the others of the file, and
   `needs` takes `{ "key": "fix" }` for one of them or a task's ID for one
   that's there. `for` takes a profile's name. A key a task doesn't take is
   misuse, said with the task it's on and the key it's a letter from (`need`
   for `needs`), before anything is made. Text, `--label`, `--needs`, `--for`,
-  `--claim`, and `--no-sync` are one task's, so they don't go with it.
+  `--priority`, `--claim`, and `--no-sync` are one task's, so they don't go with it.
 - **A plan of any length works.** Up to 100 tasks go in one write, all or
   none. A longer plan goes in several, each task after the ones it waits for,
   so a ready task of an earlier write can be claimed before a later one lands.
@@ -1210,6 +1214,14 @@ $ vb tasks work/ --state all --limit 2
   for and isn't named, it waits for no longer. `--none` says nothing, so the
   task is ready. One of the two is required, so a command cut short changes
   nothing. It's for a task no one holds that isn't finished.
+- **`--priority <n>`** and `priority <id> <n>` say how soon `--ready` takes a
+  task: an integer, higher first, and 0 when there's none. Below 0 comes after
+  the rest: `vb tasks priority 816 -1`, or `--priority=-1` on `create`. It
+  changes no state, and works whoever holds the task, while it isn't
+  finished. A row says `priority 2` while the task is open.
+- **`--order priority`** lists in the order `--ready` takes tasks, assigned
+  ones aside. It reads every task to put them in order, so it takes no
+  `--after`, and a full page prints the command with a longer `--limit`.
 - **A board holds its own limits on a task:** how long a result or a reason
   is, how many tasks one waits for, how many owners `--from` names. Past one,
   the command says what it was doing, with the board's words under it, and

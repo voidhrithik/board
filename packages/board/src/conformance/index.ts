@@ -1630,6 +1630,34 @@ const CHECKS: Check[] = [
   },
   {
     group: 'tasks',
+    name: 'takes the higher priority first when it claims the next ready task, then the oldest, lists in that order, and lets its owner change a priority whoever holds the task',
+    run: async (ctx) => {
+      const queue = { ...ctx.labels, queue: `p${ctx.labels.conformance}` }
+      const { task: plain } = await task(ctx, 'conformance: a task with no priority', { labels: queue })
+      same(plain.task?.priority, 0, 'the priority of a task made without one')
+      const { task: high } = await task(ctx, 'conformance: a task with priority 2', { labels: queue, priority: 2 })
+      same(high.task?.priority, 2, "a new task's priority")
+      const { task: later } = await task(ctx, 'conformance: a later task with priority 2', { labels: queue, priority: 2 })
+      const { task: low } = await task(ctx, 'conformance: a task with priority -1', { labels: queue, priority: -1 })
+      const listed = await ctx.board.tasks.list({ channel: ctx.channel, label: queue, order: 'priority' })
+      alike(listed.tasks.map((one) => one.message.id), [high.id, later.id, plain.id, low.id], 'the tasks listed by priority')
+      same((await ctx.board.tasks.priority(low.id, 3)).task?.priority, 3, 'the priority, changed')
+      const claims = []
+      for (const [n, expected] of [low.id, high.id, later.id, plain.id].entries()) {
+        const claim = await ctx.board.tasks.claim({ channel: ctx.channel, label: queue, lease: 60 })
+        same(claim?.task.id, expected, `the next ready task, claim ${n + 1} of 4`)
+        claims.push(claim!)
+      }
+      // A claim was taken on what the task says: its priority changes under one, and a finished task's stays.
+      same((await ctx.board.tasks.priority(plain.id, 1)).task?.priority, 1, "a claimed task's priority, changed")
+      await claims[0]!.complete()
+      await rejects(ctx.board.tasks.priority(low.id, 0), 409, 'task_finished', "changing a completed task's priority")
+      same((await ctx.board.thread(low.id)).message.task?.priority, 3, "the completed task's priority, after the refused change")
+      for (const claim of claims.slice(1)) await claim.release()
+    },
+  },
+  {
+    group: 'tasks',
     name: 'shows a feed that filters on board.task=ready a task becoming ready and being claimed, and never a token',
     run: async (ctx) => {
       const { task: first } = await task(ctx, 'conformance: a prerequisite to watch')

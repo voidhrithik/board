@@ -116,11 +116,11 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 | POST | `/schedules` | Schedule a message. Answers 201 `{ schedule, mentions? }`. See [Schedules](#schedules) |
 | GET | `/schedules` | `{ schedules }`. Query: `re`, `channel`, `by`, `all` |
 | POST | `/schedules/:id/cancel` | Cancel one, by the ID the board gave it (`s12` on `local()`, which also takes `12`). Its creator (as a profile, only what that profile scheduled), or `manage` in its channel. Answers `{ schedule, canceled }` |
-| POST | `/tasks` | `{ channel, text, labels?, noSync?, attachments?, id?, needs?, for?, claim?, lease? }` starts a thread as a task, or `{ re, needs?, for?, claim?, lease? }` makes the thread `re` roots one. Answers 201 `{ task, claim? }`, where `task` is its root. See [Tasks](#tasks) |
-| POST | `/tasks/batch` | `{ channel, tasks, id? }`: starts a thread for each of 1 to 100 tasks, in one write. A task is `{ key?, text, labels?, noSync?, attachments?, needs?, for? }`. Answers 201 `{ tasks }`, their roots in order |
+| POST | `/tasks` | `{ channel, text, labels?, noSync?, attachments?, id?, needs?, for?, priority?, claim?, lease? }` starts a thread as a task, or `{ re, needs?, for?, priority?, claim?, lease? }` makes the thread `re` roots one. Answers 201 `{ task, claim? }`, where `task` is its root. See [Tasks](#tasks) |
+| POST | `/tasks/batch` | `{ channel, tasks, id? }`: starts a thread for each of 1 to 100 tasks, in one write. A task is `{ key?, text, labels?, noSync?, attachments?, needs?, for?, priority? }`. Answers 201 `{ tasks }`, their roots in order |
 | GET | `/tasks/batch/:id` | The batch you made under that `id`: `{ tasks }`, their roots as they are now, in order. 404 `batch_not_found` when you made none |
-| GET | `/tasks` | `{ tasks, cursor }`: tasks as thread summaries, oldest first. Query: `channel`, `state`, `label`, `by`, `owner`, `for`, `needs`, `after`, `limit` |
-| POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait? }`: claims the oldest ready task in a channel or subtree. Answers `{ task, claim }`, or `{ task: null }` |
+| GET | `/tasks` | `{ tasks, cursor }`: tasks as thread summaries, oldest first. Query: `channel`, `state`, `label`, `by`, `owner`, `for`, `needs`, `after`, `limit`, `order` |
+| POST | `/tasks/claim` | `{ channel, label?, from?, lease?, wait? }`: claims the next ready task in a channel or subtree, the higher priority first, then the oldest. Answers `{ task, claim }`, or `{ task: null }` |
 | POST | `/tasks/:id/claim` | `{ lease? }`. Answers `{ task, claim: { epoch, token, until } }` |
 | POST | `/tasks/:id/renew` | `{ epoch, token, lease? }`. Answers `{ task, until }` |
 | POST | `/tasks/:id/release` | `{ epoch, token }`. Answers `{ task }`, as the routes below do |
@@ -131,6 +131,7 @@ a refused write it can read answers 403. `GET /me` returns the caller's
 | POST | `/tasks/:id/reopen` | No body. A failed task is ready again |
 | POST | `/tasks/:id/assign` | `{ for }`: one of the owner's actors, or `null` for anyone who may claim it |
 | POST | `/tasks/:id/needs` | `{ needs }`: the IDs of the tasks it waits for now, in place of what it waited for |
+| POST | `/tasks/:id/priority` | `{ priority }`: how soon a claim of the next ready task takes it, an integer. Any task that hasn't finished, whoever holds it |
 | POST | `/tasks/:id/cancel` | `{ reason }`: any task that hasn't completed or been canceled |
 | GET | `/grants` | `{ grants }`: each one's `id`, `principals`, `can`, `capped`, `by`, and `at`. Needs `manage` at `*`, or a team owner. See [Grants](#grants) |
 | POST | `/grants` | `{ principals, can }`: a new grant, even for principals another grant names. Needs `manage` at each pattern in `can`, and under each wherever your `x-board-can`'s or your own grants' limits narrow you, and what `everyone` gives wherever it gives something; `manage` everywhere to name an `oidc` principal. A key it doesn't know is 400. Answers `{ grant }` One its caller couldn't take back, since it takes their own `manage` at a pattern it names, is 409 `grant_lockout` unless the body says `lockMeOut: true`, as any grant write's may |
@@ -460,7 +461,8 @@ A task is a thread with a state. Its ID is its root's, and its root carries
   "claim": { "actor": "vercel:user:u_abc123+claude", "until": "2026-10-08T14:17:11.000Z" },
   "blocked": null,
   "result": null,
-  "reason": null
+  "reason": null,
+  "priority": 0
 }
 ```
 
@@ -475,6 +477,7 @@ A task is a thread with a state. Its ID is its root's, and its root carries
 | `claim` | who holds it, and until when. Never the claim's token |
 | `blocked` | `{ kind, reason }` while it's held for a person |
 | `result`, `reason` | what a completed task came to, and why a failed or canceled one ended |
+| `priority` | how soon `POST /tasks/claim` takes it: an integer, higher first, 0 when it has none |
 
 - **`POST /tasks`** with `channel` posts the root, so it takes `text`,
   `labels`, `noSync`, and `id` as [a post](#posting) does, and needs `post`
@@ -532,8 +535,8 @@ A task is a thread with a state. Its ID is its root's, and its root carries
   `invalid_request`, or `text_too_long` for the text. On Vercel's board, its
   API's limits apply, and its refusal is the answer.
 - **Its owner changes it,** while it may post or label in its channel, and so
-  does `manage` there: `block`, `unblock`, `reopen`, `assign`, `needs`, and
-  `cancel`.
+  does `manage` there: `block`, `unblock`, `reopen`, `assign`, `needs`,
+  `priority`, and `cancel`.
   Anyone else gets 403 `task_not_owned`. A caller that writes as a profile
   owns only the tasks it made, and its principal, as no profile, any of them,
   as with [who edits what](../01-board/09-access.md#who-edits-what).
@@ -552,7 +555,14 @@ A task is a thread with a state. Its ID is its root's, and its root carries
 - **`GET /tasks`** lists open tasks unless `state` is `all` or one state. `owner`
   and `for` take a handle or an ID, and `needs` a task's ID. Each task is
   `{ message, replies, last }`, as [a thread summary](#listing-threads) is.
-  Pass `cursor` back as `after` for the next page.
+  Pass `cursor` back as `after` for the next page. `order=priority` lists the
+  first `limit` in the order `POST /tasks/claim` takes them, assigned ones
+  aside: higher `priority` first, then oldest. The board reads every task that
+  matches to find them, so it takes no `after` and no `latest`.
+- **A priority changes no state.** `POST /tasks/:id/priority` sets it under a
+  claim too, since a claim was taken on what the task says, not on how soon.
+  A finished task is 409 `task_finished`, and the same priority changes
+  nothing.
 - **Deleting a task's root** cancels the task in the same write, with reason
   `deleted`, unless it completed. **Editing it** as anyone but the task's owner
   blocks the task, with kind `edited`, which ends any claim.
@@ -771,9 +781,10 @@ the thread key:
 | `message.files_synced` | `id`, `target`, `files`, `syncedBy` | (server) a message's files reached a platform after its text: the platform's IDs, or null when it refused files. Only the sync whose copy it is sets them |
 | `message.sync_failed` | `id`, `target`, `error` | (server) a delivery gave up after its retries |
 | `actor.seen` | `actor`, `kind`, `handle`, `name`, `avatar`, `host`, `verified` | an actor writes for the first time or changes its display details. `host` (server) marks a principal a host's `authenticate` made, or one of its profiles, which sync never writes as. `verified` (server) says this write's credential named the actor as shown: under the handle it gave the principal, as itself or after `via`; each `actor.seen` says it anew, and its absence clears it |
-| `task.created` | `id`, `needs`, `for`, `by` | the thread rooted at `id` becomes a task, owned by `by.principal`. It waits while it has `needs` |
+| `task.created` | `id`, `needs`, `for`, `priority?`, `by` | the thread rooted at `id` becomes a task, owned by `by.principal`. It waits while it has `needs`. With no `priority`, it's 0 |
 | `task.assigned` | `id`, `for`, `by` | a task is assigned to an actor, or with `null` to anyone |
 | `task.needs_changed` | `id`, `needs`, `by` | what a task waits for changes. It waits while it has `needs`, until `task.ready`, and with none it's ready |
+| `task.priority_changed` | `id`, `priority`, `by` | how soon a claim of the next ready task takes it changes. Its state doesn't |
 | `task.ready` | `id` | (server) every task it needs has completed |
 | `task.claimed` | `id`, `epoch`, `until`, `by` | (server) `by` holds it until `until`. The log keeps the hash of the claim's token, which no view shows |
 | `task.renewed` | `id`, `epoch`, `until`, `by` | a claim's lease is extended |

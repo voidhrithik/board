@@ -82,6 +82,10 @@ const lapsed = (task: Task, at: number) => task.state === 'claimed' && Date.pars
 const stateNow = (task: Task, at: number): TaskState => (lapsed(task, at) ? 'ready' : task.state)
 
 const finished = (task: Task) => task.state === 'completed' || task.state === 'failed' || task.state === 'canceled'
+/** A new task's priority on its `task.created`: none for 0, so a task made without one is written as before. */
+const ranked = (priority: number | undefined) => (priority ? { priority } : {})
+/** The order a claim of the next ready task takes tasks in: the higher priority first, then the oldest. */
+const byPriority = (a: Root, b: Root) => b.task.priority - a.task.priority || a.id - b.id
 
 /** How many tasks a change of what a task needs walks, behind the ones it adds, to see that none waits for it. */
 export const NEEDS_WALK_MAX = 500
@@ -459,17 +463,16 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       read.taken = null
       const position = await ctx.reads.tables.position()
       const now = Date.now()
-      // One assigned to the caller first, then the oldest unassigned one of an owner it takes tasks from.
+      // One assigned to the caller first, then an unassigned one of an owner it takes tasks from: of each, the higher
+      // priority first, then the oldest. Any priority can be next, so it reads every ready task there.
       let pool: Root | null = null
       let mine: Root | null = null
       for await (const root of rootsAt(filter, ['ready', 'claimed'], position)) {
         const { task } = root
         if (stateNow(task, now) !== 'ready') continue
         if (assignedTo(task, identity)) {
-          mine = root
-          break
-        }
-        if (task.for === null && pool === null && owners.has(task.owner)) pool = root
+          if (!mine || byPriority(root, mine) < 0) mine = root
+        } else if (!task.for && owners.has(task.owner) && (!pool || byPriority(root, pool) < 0)) pool = root
       }
       const root = mine ?? pool
       // A caller that stopped waiting takes nothing: a task claimed for no one would sit out its lease.
@@ -499,7 +502,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
      */
     starting(
       identity: Identity,
-      input: { channel: string; needs?: string[] | undefined; for?: string | null | undefined; claim?: boolean | undefined; lease?: number | undefined; token?: string | undefined },
+      input: { channel: string; needs?: string[] | undefined; for?: string | null | undefined; priority?: number | undefined; claim?: boolean | undefined; lease?: number | undefined; token?: string | undefined },
     ): { along: Along; claimed: (id: number) => Promise<TaskClaim | null> } {
       const { principal, actor, author } = identity
       const assigned = ownActor(principal.id, input.for)
@@ -516,7 +519,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
           position,
           events: (root) => {
             const about = { id: root.id, thread: root.thread }
-            const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, by: author } }]
+            const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, ...ranked(input.priority), by: author } }]
             if (needs.ids.length > 0 && !waits) events.push({ type: 'task.ready', payload: about })
             if (input.claim) events.push(...claiming(root, null, identity, input.lease, token).events)
             return events
@@ -541,7 +544,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
      * those are new, so it waits. Refused before anything is read: an assignee that isn't its
      * owner's, a `key` two tasks have or none has, and tasks that wait for each other.
      */
-    startingMany(identity: Identity, tasks: readonly { key?: string | undefined; needs?: readonly BatchNeed[] | undefined; for?: string | null | undefined }[]): AlongEach {
+    startingMany(identity: Identity, tasks: readonly { key?: string | undefined; needs?: readonly BatchNeed[] | undefined; for?: string | null | undefined; priority?: number | undefined }[]): AlongEach {
       const { principal, author } = identity
       const assigned = tasks.map((task) => ownActor(principal.id, task.for))
       const plan = batchPlan(tasks)
@@ -562,7 +565,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
             roots.map((root, at): Events => {
               const about = { id: root.id, thread: root.thread }
               const waitsFor = [...needs[at]!.ids, ...inside[at]!.map((other) => roots[other]!.id)]
-              return [{ type: 'task.created', payload: { ...about, needs: waitsFor, for: assigned[at]!, by: author } }, ...(readied[at] ? [{ type: 'task.ready' as const, payload: about }] : [])]
+              return [{ type: 'task.created', payload: { ...about, needs: waitsFor, for: assigned[at]!, ...ranked(tasks[at]!.priority), by: author } }, ...(readied[at] ? [{ type: 'task.ready' as const, payload: about }] : [])]
             }),
         }
       }
@@ -572,7 +575,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
      * Makes the thread rooted at `id` a task, as it is: `label` in its channel, and the caller's
      * principal owns it. A reply names no task, and neither does a root that's gone.
      */
-    async adopt(identity: Identity, id: number, input: { needs?: string[] | undefined; for?: string | null | undefined; claim?: boolean | undefined; lease?: number | undefined; token?: string | undefined }): Promise<{ task: MessageView; claim?: TaskClaim }> {
+    async adopt(identity: Identity, id: number, input: { needs?: string[] | undefined; for?: string | null | undefined; priority?: number | undefined; claim?: boolean | undefined; lease?: number | undefined; token?: string | undefined }): Promise<{ task: MessageView; claim?: TaskClaim }> {
       const { principal, actor, author } = identity
       await authorizeMessage(writes(), principal.access, 'label', id)
       const assigned = ownActor(principal.id, input.for)
@@ -588,7 +591,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         if (input.claim && waits) throw conflict('task_waiting', `#${id} would wait for ${needs.ids.map((need) => `#${need}`).join(', ')}: it wasn't made a task`)
         if (input.claim && assigned !== null && assigned !== actor.id) throw conflict('task_assigned', `#${id} would be assigned to ${assigned}: it wasn't made a task`)
         const about = { id, thread: found.thread }
-        const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, by: author } }]
+        const events: Events = [{ type: 'task.created', payload: { ...about, needs: needs.ids, for: assigned, ...ranked(input.priority), by: author } }]
         if (needs.ids.length > 0 && !waits) events.push({ type: 'task.ready', payload: about })
         if (input.claim) {
           const claimed = claiming(found, null, identity, input.lease, token)
@@ -639,14 +642,18 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
         for (const thread of page.threads) {
           last = thread.root.id
           if (thread.root.task && matches(thread.root as Root)) found.push(thread)
-          if (!query.latest && found.length === limit) break scan
+          if (!query.latest && !query.order && found.length === limit) break scan
         }
       }
       // Once it has read them all, the next read picks up at what the board has now.
-      const cursor = !query.latest && found.length === limit ? last : Math.max(last, Math.min(position, through))
+      const cursor = !query.latest && !query.order && found.length === limit ? last : Math.max(last, Math.min(position, through))
       // The last active: a sort keeps ties as they came, in the order they were made.
       const activeAt = (t: ThreadSummary) => (t.last ?? t.root).createdAt
-      const kept = query.latest ? found.sort((a, b) => activeAt(a).localeCompare(activeAt(b))).slice(-limit) : found
+      const kept = query.latest
+        ? found.sort((a, b) => activeAt(a).localeCompare(activeAt(b))).slice(-limit)
+        : query.order
+          ? found.sort((a, b) => byPriority(a.root as Root, b.root as Root)).slice(0, limit)
+          : found
       const reader = await ctx.reads.reader(principal.access, kept.flatMap((t) => (t.last ? [t.root, t.last] : [t.root])))
       return {
         tasks: kept.map((t) => ({ message: view(t.root, actors, reader), replies: t.replies, last: t.last && view(t.last, actors, reader) })),
@@ -805,6 +812,18 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
           { type: 'task.needs_changed', payload: { ...about, needs: needs.ids, by: identity.author } },
           ...(needs.ids.length > 0 && needs.completed && task.state !== 'blocked' ? [{ type: 'task.ready' as const, payload: about }] : []),
         ]
+      })
+      return { task: await shown(identity, root) }
+    },
+
+    /** Sets how soon a task is taken, whoever holds it, while it isn't finished. The same priority changes nothing. */
+    async priority(identity: Identity, id: number, priority: number): Promise<{ task: MessageView }> {
+      owns(identity, await taskOf(identity.principal.access, id))
+      const root = await changeTask(identity, id, (found) => {
+        if (finished(found.task)) throw conflict('task_finished', `#${id} is ${found.task.state}`)
+        // A task the tables kept before priorities has none: 0.
+        if ((found.task.priority || 0) === priority) return []
+        return [{ type: 'task.priority_changed', payload: { id, thread: found.thread, priority, by: identity.author } }]
       })
       return { task: await shown(identity, root) }
     },

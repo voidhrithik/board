@@ -266,11 +266,14 @@ const Claimed = { epoch: z.number().int().positive(), token: z.string().min(1).m
  */
 const ClaimToken = { token: z.string().regex(/^[A-Za-z0-9_-]{43}$/, 'a claim token is 32 bytes in base64url: 43 characters').optional() }
 
+/** How soon a task is taken: an integer, higher first. */
+const TaskPriority = z.number().int()
+
 /**
  * A new thread that's a task (`channel` and `text`, with `labels`, `noSync`, `attachments`, and an
  * `id` as a post takes them), or the thread `re` roots made one. `needs` are the tasks it waits for,
- * `for` the one actor of its owner's that claims it, and `claim` claims it in the same write, for
- * `lease` seconds.
+ * `for` the one actor of its owner's that claims it, `priority` how soon a claim takes it, and
+ * `claim` claims it in the same write, for `lease` seconds.
  */
 export const CreateTaskBody = z
   .object({
@@ -285,6 +288,7 @@ export const CreateTaskBody = z
     /** How many tasks one may wait for is the backend's to say. */
     needs: z.array(Ref).optional(),
     for: ActorId.nullable().optional(),
+    priority: TaskPriority.optional(),
     claim: z.boolean().optional(),
     lease: Lease.optional(),
     ...ClaimToken,
@@ -330,6 +334,7 @@ export const CreateTasksBody = z.object({
           /** How many tasks one may wait for is the backend's to say. */
           needs: z.array(z.union([Ref, z.object({ key: TaskKey }).strict()])).optional(),
           for: ActorId.nullable().optional(),
+          priority: TaskPriority.optional(),
         })
         .refine((task) => task.text.trim().length > 0 || (task.attachments?.length ?? 0) > 0, { message: 'message text is empty', path: ['text'] })
         .refine((task) => storable(task.text), { message: 'message text has a NUL character or a lone surrogate', path: ['text'] }),
@@ -370,10 +375,17 @@ export const TasksQuery = z.object({
   limit: z.coerce.number().int().min(1).max(500).optional(),
   /** The `limit` last active instead of the first made, the latest active last: the board reads to the end, and takes no `after`. */
   latest: flag.optional(),
-}).refine((query) => !query.latest || query.after === undefined, {
-  message: '`latest` reads every task to find the last active: it takes no `after`',
-  path: ['latest'],
+  /** `priority` lists in the order a claim of the next ready task takes them: higher first, then oldest. It reads to the end, as `latest` does. */
+  order: z.enum(['priority']).optional(),
 })
+  .refine((query) => !query.latest || query.after === undefined, {
+    message: '`latest` reads every task to find the last active: it takes no `after`',
+    path: ['latest'],
+  })
+  .refine((query) => !query.order || (query.after === undefined && !query.latest), {
+    message: '`order` reads every task to put them in order: it takes no `after`, and no `latest`',
+    path: ['order'],
+  })
 
 
 export const ClaimTaskBody = z.object({ lease: Lease.optional(), ...ClaimToken }).optional()
@@ -410,6 +422,8 @@ export const BlockTaskBody = z
 export const AssignTaskBody = z.object({ for: ActorId.nullable() })
 /** The tasks it waits for now, in place of what it waited for: none, for a task that waits for nothing. How many it may wait for is the backend's to say. */
 export const TaskNeedsBody = z.object({ needs: z.array(Ref) })
+/** How soon a claim of the next ready task takes it now: higher first, and 0 for none. */
+export const TaskPriorityBody = z.object({ priority: TaskPriority })
 export const CancelTaskBody = z.object({ reason: SentTaskNote })
 
 const CanGrant = z.union([z.literal('all'), z.array(z.string().min(1).max(16)).max(8)])
@@ -1267,6 +1281,8 @@ export const routes = {
   assignTask: { method: 'POST', path: '/tasks/:id/assign', body: AssignTaskBody },
   /** Replaces what a task waits for, while no one holds it and it isn't finished. */
   setTaskNeeds: { method: 'POST', path: '/tasks/:id/needs', body: TaskNeedsBody },
+  /** Changes how soon a task is taken, while it isn't finished, whoever holds it. */
+  setTaskPriority: { method: 'POST', path: '/tasks/:id/priority', body: TaskPriorityBody },
   cancelTask: { method: 'POST', path: '/tasks/:id/cancel', body: CancelTaskBody },
   /** Listing grants needs manage at `*`; changing one, manage at each pattern its `can` names. Team owners always may. */
   grants: { method: 'GET', path: '/grants' },

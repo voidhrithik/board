@@ -353,7 +353,7 @@ with 501 `no_scheduler`. See
 tasks.create(channel: string, input: string | NewTaskOptions): Promise<{ task: MessageView; claim?: ClaimedTask }>
 tasks.create(thread: { re: string }, input?: TaskOptions): Promise<{ task: MessageView; claim?: ClaimedTask }>
 tasks.createMany(channel: string, tasks: TaskInBatch[], opts?: { id?: string }): Promise<MessageView[]>
-tasks.list(query?: { channel?: string; state?: string; label?: Record<string, string> | string[]; by?: string; owner?: string; for?: string; needs?: string; after?: string; limit?: number; latest?: boolean }): Promise<{ tasks: ThreadSummaryView[]; cursor: string }>
+tasks.list(query?: { channel?: string; state?: string; label?: Record<string, string> | string[]; by?: string; owner?: string; for?: string; needs?: string; after?: string; limit?: number; latest?: boolean; order?: 'priority' }): Promise<{ tasks: ThreadSummaryView[]; cursor: string }>
 tasks.claim(id: string, opts?: { lease?: number; token?: string; signal?: AbortSignal }): Promise<ClaimedTask>
 tasks.claim(ready: { channel: string; label?: Record<string, string>; from?: string[]; wait?: number; lease?: number; token?: string }, opts?: { signal?: AbortSignal }): Promise<ClaimedTask | null>
 tasks.held(id: string, claim: { epoch: number; token: string }): HeldTask
@@ -362,6 +362,7 @@ tasks.unblock(id: string): Promise<MessageView>
 tasks.reopen(id: string): Promise<MessageView>
 tasks.assign(id: string, actor: string | null): Promise<MessageView>
 tasks.needs(id: string, needs: string[]): Promise<MessageView>
+tasks.priority(id: string, priority: number): Promise<MessageView>
 tasks.cancel(id: string, reason: string): Promise<MessageView>
 ```
 
@@ -389,20 +390,20 @@ if (claim) {
   thread as it is, files included.
   `TaskOptions` is `needs` (the IDs of the tasks it waits for, none of them
   canceled), `for` (the one actor of yours that claims it,
-  `<your principal>+<profile>`), `claim`, `lease`, and `token`, the claim's own as `claim` below takes it. You own the task.
+  `<your principal>+<profile>`), `priority` (how soon a claim of the next ready task takes it, an integer, higher first, 0 by default), `claim`, `lease`, and `token`, the claim's own as `claim` below takes it. You own the task.
   `claim` comes back when it was made with `claim: true`.
 - **`createMany`** starts a thread for each task in one write: all of them
   or none, and none shows before all have landed. It answers their roots in
   the order given. A `TaskInBatch` is `text`, `labels`, `noSync`, and
-  `attachments` as `post` takes them, `for`, and `needs`: a task's ID, or
+  `attachments` as `post` takes them, `for`, `priority`, and `needs`: a task's ID, or
   `{ key }` for a task of the same call, which names itself with `key`. See
   [Several tasks at once](#several-tasks-at-once).
 - **`claim`** by ID throws a 409 when the task can't be claimed:
   `task_claimed`, `task_waiting`, `task_blocked`, `task_finished`, or
-  `task_assigned`. With `{ channel }` it claims the oldest ready task in that
+  `task_assigned`. With `{ channel }` it claims the next ready task in that
   channel (`work`) or subtree (`work/`) that has every label in `label`: one
   assigned to you first, then an unassigned one you own, or whose owner `from`
-  names by ID. A handle names no owner, since several can share one, and
+  names by ID, and of each the higher `priority` first, then the oldest. A handle names no owner, since several can share one, and
   fails with 400 `invalid_from`. It answers `null`
   when nothing is ready, after waiting up to
   `wait` seconds. `lease` is seconds. `token` is the claim's token, your own
@@ -421,7 +422,7 @@ if (claim) {
   over, each throws a 409 `claim_lost` and changes nothing.
 - **`held`** gives the same writes from an `epoch` and a `token`, for a
   process that kept them.
-- **`block`, `unblock`, `reopen`, `assign`, `needs`, and `cancel`** are for the
+- **`block`, `unblock`, `reopen`, `assign`, `needs`, `priority`, and `cancel`** are for the
   task's owner, or `manage` in its channel: anyone else gets 403
   `task_not_owned`.
   A handle that writes as a profile (`team.as('fixer')`) owns only the tasks
@@ -434,11 +435,19 @@ if (claim) {
   and it isn't finished (409 `task_finished`). One that would make the task
   wait for itself, through however many tasks, is 400 `invalid_needs`. A held
   task stays held, and the same set changes nothing.
+- **`priority`** sets how soon a claim of the next ready task takes it: an
+  integer, higher first, 0 for none, and below 0 after the rest. It changes no
+  state, works whoever holds the task, and a finished one is 409
+  `task_finished`. The same priority changes nothing.
 - **`list`** answers open tasks, oldest first, as thread summaries. `state`
   is `open`, `all`, or one state. Pass `cursor` back as `after` for the next
   page. `latest: true` answers the `limit` last active instead, by each
   thread's latest message, the latest active last: the board reads every task
   that matches to find them, and builds only those. It takes no `after`.
+  `order: 'priority'` answers the first `limit` in the order a claim of the
+  next ready task takes them, assigned ones aside: higher priority first, then
+  oldest. It reads every task that matches too, and takes no `after` or
+  `latest`.
 
 #### Several tasks at once
 
@@ -476,8 +485,8 @@ const [fix, review, ship] = await team.tasks.createMany(
 - **`id` names the request.** The same `id` again, with the same channel and
   the same tasks, answers the tasks the first call made, as they are now, and
   makes none. The tasks are the same when there are as many, in the same
-  order, each with the same `key`, text, labels, `noSync`, files, needs, and
-  `for`, as you gave them. Anything else under that `id` is 409
+  order, each with the same `key`, text, labels, `noSync`, files, needs,
+  `for`, and `priority`, as you gave them. Anything else under that `id` is 409
   `duplicate_id`. A board keeps an `id` for good.
 - **100 tasks at most.** More is 400 `batch_too_large`, before the
   [middleware](../01-board/08-middleware.md) sees any of them, and so is a

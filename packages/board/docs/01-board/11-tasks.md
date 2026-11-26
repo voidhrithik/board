@@ -29,8 +29,8 @@ on it as on any other.
   its channel, assigns, holds, reopens, and cancels it.
 - **Labels route work.** `--label step=fix` here is what `claim --ready
   --label step=fix` asks for there.
-- **`vb tasks [channel]`** lists open tasks, oldest first, the order a queue
-  works them in. `--state` narrows it to one state, or widens it to `all`.
+- **`vb tasks [channel]`** lists open tasks, oldest first. `--order priority`
+  lists them as `claim --ready` takes them. `--state` narrows it to one state, or widens it to `all`.
   `--label`, `--by`, and `--for` narrow it further. A page is 50 tasks, and a
   full one prints the command that reads the next.
 
@@ -53,9 +53,9 @@ $ vb tasks work/ --state all
   as it: **claude via julian**. Without one, you claim as yourself. See
   [Identity](./03-identity.md).
 - **`vb tasks claim <id>`** holds a task. **`claim --ready <channel>`** holds
-  the oldest ready one there (`work`, or `work/` for everything under it) that
+  the next ready one there (`work`, or `work/` for everything under it) that
   has every `--label`: one assigned to you first, then an unassigned one you
-  own.
+  own, and of those the higher [priority](#priority) first, then the oldest.
 - **`--from <id>` takes another owner's tasks too.** A task's text is
   instructions for whoever claims it, so `--ready` takes only your own until
   you name whose you take. Name each owner by ID (`vb actors` lists them). A
@@ -210,6 +210,31 @@ $ vb tasks needs 814 --none
 814 needs nothing
 ```
 
+## Priority
+
+`--priority <n>` says how soon `claim --ready` takes a task: an integer,
+higher first, and 0 when there's none.
+
+```text
+$ vb tasks create work "fix the outage on acme.dev" --priority 2
+840
+$ vb tasks priority 812 1
+812 has priority 1
+$ vb tasks work/ --state ready --order priority
+#840  ready      fix the outage on acme.dev      priority 2
+#812  ready      fix CVE-123 in acme/web         step=fix  priority 1
+#836  ready      tidy the readme
+```
+
+- **A task assigned to you still comes first.** Priority orders the ones
+  assigned to you, then the rest, and the oldest goes first among equals.
+- **Below 0 comes after the rest:** `vb tasks priority 836 -1`, or
+  `--priority=-1` on `create`.
+- **It changes no state.** Its owner, or anyone with `manage` in its channel,
+  changes it whoever holds the task, while it isn't finished.
+- **`vb tasks` stays oldest first,** a page at a time. `--order priority`
+  reads every task to put them in order, so it takes no `--after`.
+
 ## A plan of tasks
 
 ```json plan.json
@@ -231,7 +256,7 @@ vb tasks create work --file plan.json --idempotency-key cve-123
 ```
 
 - **A plan is a JSON array of tasks,** from a file, or from stdin for `-`.
-  Each is `{ key?, text, labels?, needs?, for?, noSync?, attachments? }`. Any
+  Each is `{ key?, text, labels?, needs?, for?, priority?, noSync?, attachments? }`. Any
   other key is refused before a task is made, so a `need` for `needs` can't
   make a task that waits for nothing.
 - **A task's `key` names it for the others of the plan.** `needs` takes
@@ -293,8 +318,8 @@ $ vb tasks assign 832 --pool
 unassigned 832
 ```
 
-- **Its owner made it a task.** `block`, `unblock`, `reopen`, `assign`, and
-  `cancel` are for its owner, or anyone with `manage` in its channel. Anyone
+- **Its owner made it a task.** `block`, `unblock`, `reopen`, `assign`,
+  `priority`, and `cancel` are for its owner, or anyone with `manage` in its channel. Anyone
   else fails with `task_not_owned`.
 - **A profile owns only the tasks it made.** `vb --as fixer` changes what
   `fixer` made a task, and not what you or `--as triage` did. As yourself,

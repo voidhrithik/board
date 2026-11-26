@@ -2,6 +2,7 @@ import {
   AckBody,
   AssignTaskBody,
   TaskNeedsBody,
+  TaskPriorityBody,
   BlockTaskBody,
   CancelTaskBody,
   ClaimReadyTaskBody,
@@ -197,6 +198,8 @@ async function inputOf(name: Method, request: Request, url: URL, params: Record<
       return { id, ...AssignTaskBody.parse(await body()) }
     case 'setTaskNeeds':
       return { id, ...TaskNeedsBody.parse(await body()) }
+    case 'setTaskPriority':
+      return { id, ...TaskPriorityBody.parse(await body()) }
     case 'cancelTask':
       return { id, ...CancelTaskBody.parse(await body()) }
     case 'createGrant':
@@ -627,7 +630,7 @@ export async function createServe(context: BoardContext): Promise<Serve> {
    * left out is its empty value. A batch made under an `id` is that `id`'s only for the same one.
    */
   async function batchRequest(body: Pick<Protocol['createTasks']['input'], 'channel' | 'tasks'>): Promise<string> {
-    const tasks = body.tasks.map((task) => [task.key ?? null, task.text, Object.entries(task.labels ?? {}).sort(([a], [b]) => (a < b ? -1 : 1)), task.noSync ?? false, task.attachments ?? [], task.needs ?? [], task.for ?? null])
+    const tasks = body.tasks.map((task) => [task.key ?? null, task.text, Object.entries(task.labels ?? {}).sort(([a], [b]) => (a < b ? -1 : 1)), task.noSync ?? false, task.attachments ?? [], task.needs ?? [], task.for ?? null, ...(task.priority ? [task.priority] : [])])
     return (await sha256(JSON.stringify([body.channel, tasks]))).slice(0, 32)
   }
 

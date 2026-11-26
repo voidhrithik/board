@@ -231,6 +231,48 @@ describe("vb tasks, with the claim it keeps", () => {
     expect((await vb(['tasks', 'needs', thread, notes])).stderr).toBe(`error: #${thread} isn't a task.\n\n  Make it one:\n    vb tasks create ${thread}\n`)
   }, 60_000)
 
+  it('takes the higher priority first with claim --ready, lists in that order with --order priority, and changes it as its owner', async () => {
+    const low = await create('ranked', 'tidy the readme')
+    const high = await create('ranked', 'fix the outage', ['--priority', '2'])
+    const below = await create('ranked', 'someday', ['--priority=-1'])
+    const mid = await create('ranked', 'rotate the keys', ['--priority', '1'])
+    expect((await task(high)).task?.priority).toBe(2)
+    // The default list stays oldest first; in order, as claim --ready takes them, and a row says it.
+    expect((await ok(['tasks', 'ranked'])).split('\n').map((row) => row.split(' ')[0]).filter(Boolean)).toEqual([`#${low}`, `#${high}`, `#${below}`, `#${mid}`])
+    const ordered = await ok(['tasks', 'ranked', '--order', 'priority'])
+    expect(ordered.split('\n').filter(Boolean).map((row) => [row.split(' ')[0], row.match(/priority -?\d+/)?.[0] ?? null])).toEqual([
+      [`#${high}`, 'priority 2'],
+      [`#${mid}`, 'priority 1'],
+      [`#${low}`, null],
+      [`#${below}`, 'priority -1'],
+    ])
+    expect((await ok(['tasks', 'ranked', '--order', 'priority', '--limit', '2'])).split('\n').at(-2)).toBe('(more not shown: vb tasks ranked --order priority --limit 4)')
+    const order = await vb(['tasks', 'ranked', '--order', 'newest'])
+    expect([order.code, order.stderr.split('\n')[0]]).toEqual([2, "error: --order takes priority, and newest isn't one."])
+    expect((await vb(['tasks', 'ranked', '--order', 'priority', '--after', low])).stderr.split('\n')[0]).toBe('error: --order priority reads every task to put them in order: it takes no --after.')
+    const bad = await vb(['tasks', 'create', 'ranked', 'x', '--priority', 'high'])
+    expect([bad.code, bad.stderr.split('\n')[0]]).toEqual([2, "error: --priority takes an integer, such as 2 or -1, and high isn't one."])
+
+    // A change, below 0 included, is a line; --json has the task as it is now.
+    expect(await ok(['tasks', 'priority', low, '3'])).toBe(`${low} has priority 3\n`)
+    expect(await ok(['tasks', 'priority', mid, '-2'])).toBe(`${mid} has priority -2\n`)
+    const json = JSON.parse(await ok(['tasks', 'priority', below, '0', '--json'])) as { task: MessageView; outcome: string }
+    expect(json).toMatchObject({ outcome: 'set', task: { id: below, task: { priority: 0 } } })
+    const missing = await vb(['tasks', 'priority', low])
+    expect([missing.code, missing.stderr.split('\n')[0]]).toEqual([2, 'error: Missing its priority: an integer, higher first, such as 2, or 0 for none.'])
+    expect((await vb(['tasks', 'priority', low, '1.5'])).stderr.split('\n')[0]).toBe("error: A priority is an integer, such as 2 or -1, and 1.5 isn't one.")
+    // claim --ready takes the higher first, then the oldest.
+    const next = async () => (await ok(['tasks', 'claim', 'ranked', '--ready'])).split('  ')[0]
+    expect([await next(), await next(), await next(), await next()]).toEqual([`#${low}`, `#${high}`, `#${below}`, `#${mid}`])
+    // It's its owner's to change, whoever holds it, and not once it's finished.
+    const theirs = await vb(['tasks', 'priority', high, '1'], await deployment())
+    expect([theirs.code, theirs.stderr.split('\n')[0]]).toEqual([1, `error: You can't change the priority of task #${high}. It's someone else's.`])
+    expect(await ok(['tasks', 'priority', high, '1'])).toBe(`${high} has priority 1\n`)
+    await ok(['tasks', 'complete', high, 'fixed'])
+    const done = await vb(['tasks', 'priority', high, '5'])
+    expect([done.code, done.stderr.split('\n')[0]]).toEqual([1, `error: Can't change the priority of task #${high}. It's finished.`])
+  }, 60_000)
+
   it("cancels a task as its owner, and tells anyone else it isn't theirs", async () => {
     const id = await create('cancels', 'rebuild the index')
     const web = await deployment()
