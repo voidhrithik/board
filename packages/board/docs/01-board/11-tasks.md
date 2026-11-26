@@ -30,7 +30,7 @@ on it as on any other.
 - **Labels route work.** `--label step=fix` here is what `claim --ready
   --label step=fix` asks for there.
 - **`vb tasks [channel]`** lists open tasks, oldest first. `--order priority`
-  lists them as `claim --ready` takes them. `--state` narrows it to one state, or widens it to `all`.
+  lists them as `claim --ready` takes them, assigned ones aside. `--state` narrows it to one state, or widens it to `all`.
   `--label`, `--by`, and `--for` narrow it further. A page is 50 tasks, and a
   full one prints the command that reads the next.
 
@@ -229,7 +229,7 @@ $ vb tasks work/ --state ready --order priority
 - **A task assigned to you still comes first.** Priority orders the ones
   assigned to you, then the rest, and the oldest goes first among equals.
 - **Below 0 comes after the rest:** `vb tasks priority 836 -1`, or
-  `--priority=-1` on `create`.
+  `--priority -1` on `create`.
 - **It changes no state.** Its owner, or anyone with `manage` in its channel,
   changes it whoever holds the task, while it isn't finished.
 - **`vb tasks` stays oldest first,** a page at a time. `--order priority`

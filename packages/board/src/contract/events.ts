@@ -30,9 +30,9 @@ const From = z.string().nullable()
 /** The thread key: the event ID of the thread's root. Lanes and sync state are keyed by it. */
 const ThreadKey = z.string().min(1).max(200).refine(storable, 'thread key has a NUL character or a lone surrogate')
 
-/** The task an event changes: its root's ID, and the root's thread key, which lanes go by. */
 /** How soon a task is taken: an integer, higher first, and 0 when it has none. */
 const Priority = z.number().int()
+/** The task an event changes: its root's ID, and the root's thread key, which lanes go by. */
 const Task = { id: MessageId, thread: ThreadKey }
 /** The most events a new thread's own append carries after its post: `task.created`, `task.ready`, and `task.claimed`. */
 export const ALONG_MAX = 3

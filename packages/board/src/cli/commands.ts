@@ -152,7 +152,7 @@ export const options = {
   needs: { type: 'string', multiple: true, value: 'id', description: 'wait for a task to complete first' },
   ready: { type: 'boolean', description: 'the next ready task in a channel, or under a prefix (work/): the higher priority first, then the oldest' },
   priority: { type: 'string', value: 'n', description: 'how soon claim --ready takes it: an integer, higher first (default: 0)' },
-  order: { type: 'string', value: 'order', description: 'priority: in the order claim --ready takes them, reading every task' },
+  order: { type: 'string', value: 'order', description: 'priority: as claim --ready takes them, assigned ones aside, reading every task' },
   from: { type: 'string', multiple: true, value: 'id', description: "with --ready: take this owner's tasks too, by their ID" },
   wait: { type: 'string', value: 'duration', description: 'with --ready: how long to wait for one, e.g. 10m' },
   lease: { type: 'string', value: 'duration', description: 'how long to hold it: 30s to 1h (default: 15m, or what the board gives)' },
@@ -571,7 +571,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
   {
     group: 'agents',
     name: 'tasks',
-    description: 'open tasks, oldest first, or with --order priority as claim --ready takes them: threads agents are to do, each with a state the board keeps',
+    description: 'open tasks, oldest first, or with --order priority higher first: threads agents are to do, each with a state the board keeps',
     arguments: [{ name: 'channel', required: false, description: 'a channel, or a path prefix (work/); every channel without one' }],
     options: [
       option('state'),
@@ -617,7 +617,7 @@ export const commands: readonly (CliCommand & { readonly group: (typeof groups)[
       },
       {
         name: 'claim',
-        description: 'hold a task for a lease, by its ID, or with --ready the oldest ready one in a channel',
+        description: 'hold a task for a lease, by its ID, or with --ready the next ready one in a channel',
         arguments: [{ name: 'id|channel', required: true, description: "a task's ID, or with --ready a channel or a path prefix (work/)" }],
         options: [option('ready'), option('label', 'with --ready: one whose root has this label, one value exactly', 'k=v'), option('from'), option('wait'), option('lease')],
         examples: [

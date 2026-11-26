@@ -152,6 +152,7 @@ describe('tasks', () => {
     ])
     expect(row({ state: 'ready', priority: -1 })).toBe('      task  ready · priority -1')
     expect(row({ state: 'ready', priority: 0 })).toBe('      task  ready')
+    expect(row({ state: 'completed', result: 'fixed', priority: 2 })).toBe('      task  completed · fixed')
   })
 })
 

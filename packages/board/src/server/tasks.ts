@@ -445,7 +445,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
     throw badRequest(`from: ${value} is a handle, which several can share: name the owner by ID`, 'invalid_from')
   }
 
-  /** A claim of the oldest ready task there that the caller takes, or null when there's none now. */
+  /** A claim of the next ready task there that the caller takes, the higher priority first, or null when there's none now. */
   async function claimNext(identity: Identity, input: Protocol['claimReadyTask']['input'], signal: AbortSignal): Promise<{ root: Message; claim: TaskClaim } | null> {
     const ctx = writes()
     const { principal, actor } = identity
@@ -691,7 +691,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       return { task: await shown(identity, root), claim }
     },
 
-    /** Claims the oldest ready task there, waiting up to `wait` seconds for one. */
+    /** Claims the next ready task there, waiting up to `wait` seconds for one. */
     async claimReady(identity: Identity, input: Protocol['claimReadyTask']['input'], signal: AbortSignal): Promise<Protocol['claimReadyTask']['output']> {
       const deadline = Date.now() + (input.wait ?? 0) * 1000
       for (let pause = 100; ; pause = Math.min(pause * 2, 1000)) {

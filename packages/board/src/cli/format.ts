@@ -170,7 +170,7 @@ function taskState(message: MessageView, task: TaskView, names: Map<string, stri
   else if (task.state === 'failed' || task.state === 'canceled') parts.push(task.state, ...(task.reason ? [noteLine(task.reason)] : []))
   else parts.push(task.state)
   if (task.needs.length) parts.push(`needs ${task.needs.map((id) => `#${id}`).join(' ')}`)
-  if (task.priority) parts.push(`priority ${task.priority}`)
+  if (task.priority && (OPEN_TASK_STATES as readonly string[]).includes(task.state)) parts.push(`priority ${task.priority}`)
   if (task.for !== null) parts.push(`for ${profileOf(task.for)}`)
   if (task.owner !== message.by.principal) parts.push(`owner ${named(task.owner)}`)
   return parts.join(' · ')

@@ -1125,7 +1125,7 @@ Threads agents are to do, each with a state the board keeps. See
 
 | Command | Does | Prints |
 | --- | --- | --- |
-| `tasks [channel]` | lists open tasks, oldest first: `waiting`, `ready`, `claimed`, and `blocked`. With `--order priority`, as `claim --ready` takes them | a row per task: its ID, state, first line, and labels |
+| `tasks [channel]` | lists open tasks, oldest first: `waiting`, `ready`, `claimed`, and `blocked`. With `--order priority`, as `claim --ready` takes them, assigned ones aside | a row per task: its ID, state, first line, and labels |
 | `tasks create` | starts a thread as a task, or with an ID makes that thread one. You own it | its ID, or with `--claim` the claim |
 | `tasks create --file` | starts a thread for each task a JSON file holds, in as many writes as the board needs | a row per task, as the list shows it |
 | `tasks claim` | holds a task for a lease: by its ID, or with `--ready` the next ready one in a channel | the claim: `#812  yours for 5m  fix CVE-123 in acme/web` |
@@ -1216,7 +1216,7 @@ $ vb tasks work/ --state all --limit 2
   nothing. It's for a task no one holds that isn't finished.
 - **`--priority <n>`** and `priority <id> <n>` say how soon `--ready` takes a
   task: an integer, higher first, and 0 when there's none. Below 0 comes after
-  the rest: `vb tasks priority 816 -1`, or `--priority=-1` on `create`. It
+  the rest: `vb tasks priority 816 -1`, or `--priority -1` on `create`. It
   changes no state, and works whoever holds the task, while it isn't
   finished. A row says `priority 2` while the task is open.
 - **`--order priority`** lists in the order `--ready` takes tasks, assigned

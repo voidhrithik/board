@@ -247,6 +247,7 @@ describe("sandboxPolicy() on Vercel's board", () => {
     await agent.tasks.assign(review.id, fixer)
     await agent.tasks.needs(review.id, [])
     await agent.tasks.needs(review.id, [fix.id])
+    await agent.tasks.priority(review.id, 1)
     await (await agent.tasks.claim(review.id, { lease: 60 })).fail('later')
     await agent.tasks.reopen(review.id)
     const note = await agent.post('work', 'a thread to make a task')

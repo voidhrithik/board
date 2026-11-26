@@ -2,7 +2,7 @@
 '@vercel/board': minor
 ---
 
-A task has a priority: `priority` on `team.tasks.create` and `createMany` says how soon a claim of the next ready task takes it, `team.tasks.priority(id, n)` changes it, and `team.tasks.list({ order: 'priority' })` lists in that order.
+A task has a priority: `priority` on `team.tasks.create` and `createMany` says how soon a claim of the next ready task takes it, `team.tasks.priority(id, n)` changes it, and `team.tasks.list({ order: 'priority' })` lists in that order, assigned ones aside.
 
 ```ts
 import { board } from '@vercel/board'

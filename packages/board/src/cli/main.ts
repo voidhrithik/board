@@ -109,13 +109,17 @@ const canonical = (word: string | undefined) => (word === undefined ? word : (co
 // No argument can hold a NUL, so a marked one can't be anything else.
 const MARK = '\0'
 
+/** A priority below 0, as an argument gives one. */
+const NEGATIVE = /^-\d+$/
+
 /**
- * Attachment IDs are base64url, so boards minted some that start with `-`,
- * which `parseArgs` reads as a flag. Where `download` takes its ID, a token
- * shaped like one is the ID: this marks it to parse as a positional. So is a
- * priority below 0, where `tasks priority` takes one after its task.
+ * Values that `parseArgs` would read as flags, since they start with `-`.
+ * Attachment IDs are base64url, so boards minted some that start with one:
+ * where `download` takes its ID, a token shaped like one is the ID, marked to
+ * parse as a positional. So is a priority below 0 where `tasks priority` takes
+ * one after its task, and `--priority -1` reads as `--priority=-1`.
  */
-function markAttachmentId(args: string[]): string[] {
+function dashedValues(args: string[]): string[] {
   const positionals: string[] = []
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!
@@ -123,8 +127,10 @@ function markAttachmentId(args: string[]): string[] {
     if (!arg.startsWith('-') || arg === '-') positionals.push(arg)
     else if (positionals.length === 1 && positionals[0] === 'download' && AttachmentId.safeParse(arg).success)
       return [...args.slice(0, i), `${MARK}${arg}`, ...args.slice(i + 1)]
-    else if (positionals.length === 3 && positionals[0] === 'tasks' && positionals[1] === 'priority' && /^-\d+$/.test(arg))
+    else if (positionals.length === 3 && positionals[0] === 'tasks' && positionals[1] === 'priority' && NEGATIVE.test(arg))
       return [...args.slice(0, i), `${MARK}${arg}`, ...args.slice(i + 1)]
+    else if (arg === '--priority' && NEGATIVE.test(args[i + 1] || ''))
+      return dashedValues([...args.slice(0, i), `--priority=${args[i + 1]}`, ...args.slice(i + 2)])
     else if (takesValue(arg)) i++
   }
   return args
@@ -155,7 +161,7 @@ function removedCommand(word: string): Failed | undefined {
  * bare `--mentions` takes none.
  */
 export function commandWord(argv: string[]): string | undefined {
-  const { positionals } = parseArgs({ args: markAttachmentId(withMentions(argv)), allowPositionals: true, options: OPTIONS, strict: false })
+  const { positionals } = parseArgs({ args: dashedValues(withMentions(argv)), allowPositionals: true, options: OPTIONS, strict: false })
   return canonical(positionals[0])
 }
 
@@ -300,8 +306,8 @@ function parse(argv: string[]) {
   if (removed) throw removed
   try {
     const table = optionsFor(word)
-    const parsed = parseArgs({ args: markAttachmentId(args), allowPositionals: true, options: table }) as ReturnType<typeof parseAll>
-    ordered = parseArgs({ args: markAttachmentId(args), allowPositionals: true, options: table, tokens: true }).tokens.flatMap((token) =>
+    const parsed = parseArgs({ args: dashedValues(args), allowPositionals: true, options: table }) as ReturnType<typeof parseAll>
+    ordered = parseArgs({ args: dashedValues(args), allowPositionals: true, options: table, tokens: true }).tokens.flatMap((token) =>
       token.kind === 'option' ? [{ name: token.name, value: token.value }] : [],
     )
     flags = parsed.values
@@ -2233,7 +2239,7 @@ async function createPlan(target: string, text: string | undefined, path: string
   if (text !== undefined) throw usage("Text is one task's: with --file, each task in the file has its own.")
   // What the file holds comes first: one task's text in it means these options are that task's, on stdin.
   const parsed = await planSource(path)
-  const own = (['label', 'needs', 'for', 'priority', 'claim', 'lease', 'no-sync'] as const).find((name) => (flags as Record<string, unknown>)[name] !== undefined && (flags as Record<string, unknown>)[name] !== false)
+  const own = (['label', 'needs', 'for', 'priority', 'claim', 'lease', 'no-sync'] as const).find((name) => (flags as Record<string, unknown>)[name])
   if (own !== undefined) throw usage(`--${own} is one task's: with --file, each task in the file has its own.`)
   const board = client()
   const tasks = await planFrom(parsed, path, board)
@@ -2558,7 +2564,7 @@ async function tasks(args: string[]): Promise<number> {
     if (state !== undefined && state !== 'open' && state !== 'all' && !TASK_STATES.includes(state))
       throw usage(`--state takes a task's state, open, or all, and ${state} isn't one.`)
     if (flags.order && flags.order !== 'priority') throw usage(`--order takes priority, and ${flags.order} isn't one.`)
-    if (flags.order && flags.after !== undefined) throw usage('--order priority reads every task to put them in order: it takes no --after.')
+    if (flags.order && flags.after) throw usage('--order priority reads every task to put them in order: it takes no --after.')
     const board = client()
     const limit = flags.limit ? Number(flags.limit) : 50
     const page = await board.tasks.list({

@@ -234,7 +234,7 @@ describe("vb tasks, with the claim it keeps", () => {
   it('takes the higher priority first with claim --ready, lists in that order with --order priority, and changes it as its owner', async () => {
     const low = await create('ranked', 'tidy the readme')
     const high = await create('ranked', 'fix the outage', ['--priority', '2'])
-    const below = await create('ranked', 'someday', ['--priority=-1'])
+    const below = await create('ranked', 'someday', ['--priority', '-1'])
     const mid = await create('ranked', 'rotate the keys', ['--priority', '1'])
     expect((await task(high)).task?.priority).toBe(2)
     // The default list stays oldest first; in order, as claim --ready takes them, and a row says it.
@@ -256,6 +256,7 @@ describe("vb tasks, with the claim it keeps", () => {
     // A change, below 0 included, is a line; --json has the task as it is now.
     expect(await ok(['tasks', 'priority', low, '3'])).toBe(`${low} has priority 3\n`)
     expect(await ok(['tasks', 'priority', mid, '-2'])).toBe(`${mid} has priority -2\n`)
+    expect((await task((await create('ranked', 'later', ['--priority=-3'])))).task?.priority).toBe(-3)
     const json = JSON.parse(await ok(['tasks', 'priority', below, '0', '--json'])) as { task: MessageView; outcome: string }
     expect(json).toMatchObject({ outcome: 'set', task: { id: below, task: { priority: 0 } } })
     const missing = await vb(['tasks', 'priority', low])

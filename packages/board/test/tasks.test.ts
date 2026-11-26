@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
@@ -11,6 +13,8 @@ import { block } from '../src/contract/blocks.ts'
 import { foldMessages, type MessagesState, type Task } from '../src/contract/folds.ts'
 import { taskView } from '../src/server/feed.ts'
 import { memory } from '../src/store/memory.ts'
+import { sqlite } from '../src/store/sqlite.ts'
+import { sqliteDb } from '../src/store/sqlite-db.ts'
 import { http } from '../src/backend-http/index.ts'
 import { board as projectBoard, BOARD_URL, caller, deploymentToken, personToken, testBoard, workflowToken } from './harness.ts'
 import { fakeQueue } from './queue.ts'
@@ -1259,6 +1263,32 @@ describe('a priority', () => {
     const issue = (await ada('POST', '/messages', { channel: 'issues', text: 'export times out' })).body.message as MessageView
     expect((await ada('POST', '/tasks', { re: issue.id, priority: 4 })).body.task.task.priority).toBe(4)
     expect(code(await ada('POST', '/tasks', { channel: 'work', text: 'x', priority: 1.5 }))).toEqual([400, 'invalid_request'])
+  })
+
+  it('counts a task the tables kept before priorities as 0, for a claim of the next and a list in order', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'board-priority-'))
+    try {
+      const path = join(dir, 'board.db')
+      const { ada, board } = setup({ store: sqlite({ path }) })
+      const kept = await task(ada, 'kept from before priorities')
+      // As a board written before priorities keeps it: its task has no priority at all.
+      const raw = sqliteDb(path)
+      await raw.commit({ text: 'select 1 as claimed', values: [] }, [
+        { text: "update board_messages set data = json_remove(data, '$.task.priority') where id = $1", values: [Number(kept.id)] },
+        { text: "update board_versions set data = json_remove(data, '$.task.priority') where message_id = $1", values: [Number(kept.id)] },
+      ])
+      await raw.close()
+      expect((await ada('GET', `/messages/${kept.id}`)).body.message.task.priority).toBe(0)
+      const high = await task(ada, 'fix the outage', { priority: 2 })
+      const low = await task(ada, 'someday', { priority: -1 })
+      const ids = async () => ((await ada('GET', '/tasks?order=priority')).body.tasks as { message: MessageView }[]).map((t) => t.message.id)
+      expect(await ids()).toEqual([high.id, kept.id, low.id])
+      const taken = async () => (await ada('POST', '/tasks/claim', { channel: 'work' })).body.task?.id
+      expect([await taken(), await taken(), await taken()]).toEqual([high.id, kept.id, low.id])
+      await board.store.close()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('lists in claim order with order=priority, reading to the end, and takes no after', async () => {

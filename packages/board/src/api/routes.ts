@@ -382,7 +382,7 @@ export const TasksQuery = z.object({
     message: '`latest` reads every task to find the last active: it takes no `after`',
     path: ['latest'],
   })
-  .refine((query) => !query.order || (query.after === undefined && !query.latest), {
+  .refine((query) => !query.order || (!query.after && !query.latest), {
     message: '`order` reads every task to put them in order: it takes no `after`, and no `latest`',
     path: ['order'],
   })
@@ -391,8 +391,9 @@ export const TasksQuery = z.object({
 export const ClaimTaskBody = z.object({ lease: Lease.optional(), ...ClaimToken }).optional()
 
 /**
- * Claims the oldest ready task in `channel` that has every label in `label`: one assigned to the
- * caller first, then an unassigned one it owns, or whose owner `from` names by ID. `wait`
+ * Claims the next ready task in `channel` that has every label in `label`: one assigned to the
+ * caller first, then an unassigned one it owns, or whose owner `from` names by ID, and of each
+ * the higher priority first, then the oldest. `wait`
  * holds the request up to that many seconds for one.
  */
 export const ClaimReadyTaskBody = z.object({
@@ -1264,7 +1265,7 @@ export const routes = {
   createTasks: { method: 'POST', path: '/tasks/batch', body: CreateTasksBody },
   /** The caller's own batch made under the `id` it gave, its tasks as they are now: for telling a retry before making anything. */
   createdTasks: { method: 'GET', path: '/tasks/batch/:id', query: CreatedTasksQuery },
-  /** Claims the oldest ready task in a channel or subtree: `label` where it is. Answers `{ task: null }` when none is. */
+  /** Claims the next ready task in a channel or subtree, the higher priority first: `label` where it is. Answers `{ task: null }` when none is. */
   claimReadyTask: { method: 'POST', path: '/tasks/claim', body: ClaimReadyTaskBody },
   /** Claims a task: `label` in its channel. Its answer's `claim` goes on what the claim does next. */
   claimTask: { method: 'POST', path: '/tasks/:id/claim', body: ClaimTaskBody },

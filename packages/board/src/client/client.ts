@@ -464,9 +464,10 @@ export function createBoardClient(options: ClientOptions) {
   }
 
   /**
-   * Claims task `target`, or with `{ channel }` the oldest ready task in that channel (`work`) or
+   * Claims task `target`, or with `{ channel }` the next ready task in that channel (`work`) or
    * subtree (`work/`) that has every label in `label`: one assigned to you first, then an
-   * unassigned one you own, or whose owner `from` names by ID (400 `invalid_from` for a handle,
+   * unassigned one you own, or whose owner `from` names by ID, and of each the higher priority
+   * first, then the oldest (400 `invalid_from` for a handle,
    * which several can share). It needs `label` where the task
    * is. A task by ID that can't be claimed throws a 409 (`task_claimed`, `task_waiting`, ...); a
    * channel with nothing ready answers null, after waiting up to `wait` seconds for one. `lease`
@@ -705,7 +706,8 @@ export function createBoardClient(options: ClientOptions) {
        * `blocked`) unless `state` says `all` or names one. `owner` and `for` take a handle or an ID,
        * `needs` a task's ID, for the tasks that wait for it. `cursor`, as `after`, reads the next page.
        * `latest` answers the `limit` last active instead, the latest active last: the board reads every
-       * task to find them, and builds only those.
+       * task to find them, and builds only those. `order: 'priority'` answers the first `limit` as a
+       * claim of the next ready task takes them, assigned ones aside, reading every task too.
        */
       list: (query: Omit<TasksQueryInput, 'label' | 'latest'> & { label?: Record<string, string> | string[]; latest?: boolean } = {}) => call<TasksPage>('GET', `/tasks${queryString(query)}`),
       create: createTask,

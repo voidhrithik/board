@@ -1195,7 +1195,7 @@ function fakeBoard(shared: Shared, boardId: string) {
   /** The higher priority first, then the oldest: the order a claim-next takes ready tasks in. */
   const byPriority = (a: Thread, b: Thread) => b.task!.priority - a.task!.priority || oldestFirst(a, b)
 
-  /** The oldest ready task there the caller takes: one assigned to its actor first, then an unassigned one it owns or `from` names. */
+  /** The next ready task there the caller takes: one assigned to its actor first, then an unassigned one it owns or `from` names, the higher priority first, then the oldest. */
   function claimNext(actor: Actor, body: Record<string, any>, claim: { hash: string; lease: number }, share: { expiries: number; goneOver: number; looks: number; first: boolean }): Thread | null {
     const named = channelsNamed(String(body.channel))
     // Channels where the caller lacks `label` are skipped: with it in none, there's nothing it claims. The limit counts those it may claim in.
@@ -1218,7 +1218,7 @@ function fakeBoard(shared: Shared, boardId: string) {
     const assignedFirst = (order: (a: Thread, b: Thread) => number) => (a: Thread, b: Thread) => Number(assignedTo(b.task!, actor)) - Number(assignedTo(a.task!, actor)) || order(a, b)
     const look = () => {
       share.looks++
-      // From each place, its oldest ready tasks and its claims whose lease ran out longest ago, a few of each, and of
+      // From each place, its first ready tasks by priority and its claims whose lease ran out longest ago, a few of each, and of
       // all those a bounded number, the assigned ones first. Each is the caller's to take, so only `labels` narrow them.
       const ready = places.flatMap((tasks) => tasks.filter((t) => t.task!.state === 'ready').sort(byPriority).slice(0, PLACE_READS)).sort(assignedFirst(byPriority)).slice(0, READY_IN_ALL)
       const over = places.flatMap((tasks) => tasks.filter(lapsed).sort(longestLapsed).slice(0, PLACE_READS)).sort(assignedFirst(longestLapsed)).slice(0, LAPSED_IN_ALL)
