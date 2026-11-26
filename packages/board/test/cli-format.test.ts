@@ -129,14 +129,16 @@ describe('tasks', () => {
         { message: root('rotate the deploy keys', { due: at(3 * 86_400_000 + 60_000) }, { step: 'ops' }), replies: 0, last: null },
         { message: { ...root('renew the cert', { state: 'waiting', needs: ['810'], due: at(-2 * 3_600_000) }), id: '813' }, replies: 0, last: null },
         { message: { ...root('ship it', { state: 'completed', due: at(-86_400_000) }), id: '814' }, replies: 0, last: null },
+        { message: { ...root('deploy it', { state: 'blocked', blocked: { kind: null, reason: 'which release?' }, due: at(-86_400_000) }), id: '815' }, replies: 0, last: null },
       ],
       now,
     ).split('\n')
     expect(rows).toEqual([
       `#812  ready      ${'rotate the deploy keys'.padEnd(30)}  step=ops  due in 3d`,
       `#813  waiting    ${'renew the cert'.padEnd(30)}  needs #810  2h late`,
-      // A finished task's date says nothing any more.
+      // A finished task's date says nothing any more, and a held one's says how late it is after what it's held for.
       `#814  completed  ship it`,
+      `#815  blocked    ${'deploy it'.padEnd(30)}  which release?  1d late`,
     ])
     expect(row({ due: at(45 * 60_000) })).toBe('      task  ready · due in 45m')
     expect(row({ state: 'claimed', claim: { actor: holder, until: at(60_000) }, due: at(-30_000) })).toBe('      task  claimed by claude via julian · 1m left · 30s late')

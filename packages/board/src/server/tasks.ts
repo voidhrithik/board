@@ -89,7 +89,7 @@ export const NEEDS_WALK_MAX = 500
 /** When a task is due, as the board keeps it: in UTC, or null for no time. */
 const dueAt = (due: string | null | undefined): string | null => (due ? new Date(due).toISOString() : null)
 /** What `task.created` says of when a task is due: nothing for no time, as a task made before due dates says. */
-const dated = (due: string | null) => (due === null ? {} : { due })
+const dated = (due: string | null) => (due ? { due } : {})
 
 /** Whether `value` is shaped like an ID, `<where it's from>:<who>`, as every principal's and actor's is. What it names is a credential's to say, never a client's. */
 const isId = (value: string) => /^[^\s:]+:\S+$/.test(value)
@@ -627,7 +627,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       const now = Date.now()
       const matches = ({ task }: Root) =>
         (wanted === 'all' || wanted === 'open' || stateNow(task, now) === wanted) &&
-        (!query.overdue || (task.due !== null && Date.parse(task.due) < now)) &&
+        (!query.overdue || (!!task.due && Date.parse(task.due) < now)) &&
         (owners === null || owners.has(task.owner)) &&
         (assignees === null || (task.for !== null && assignees.has(task.for))) &&
         (needed === null || task.needs.includes(needed))
@@ -824,7 +824,7 @@ export function createTasks(options: { store?: A2Store | undefined; scheduler?: 
       const when = dueAt(due)
       const root = await changeTask(identity, id, (found) => {
         if (finished(found.task)) throw conflict('task_finished', `#${id} is ${found.task.state}`)
-        return found.task.due === when ? [] : [{ type: 'task.due_changed', payload: { id, thread: found.thread, due: when, by: identity.author } }]
+        return (found.task.due || null) === when ? [] : [{ type: 'task.due_changed', payload: { id, thread: found.thread, due: when, by: identity.author } }]
       })
       return { task: await shown(identity, root) }
     },

@@ -191,6 +191,14 @@ describe("vb tasks, with the claim it keeps", () => {
     // A time as Date reads it: anything else is refused before it's sent.
     const bad = await vb(['tasks', 'create', 'dated', 'when?', '--due', 'someday'])
     expect([bad.code, bad.stderr.split('\n')[0]]).toEqual([2, "error: --due takes a time like 2026-10-08T09:00:00Z, and someday isn't one."])
+    // A plan's due is a time as --due takes one, and --due is one task's, so it doesn't go with a plan.
+    const plan = JSON.stringify([{ text: 'planned', due: '2099-12-01T17:00Z' }])
+    const planned = (await ok(['tasks', 'create', 'elsewhere', '--file', '-'], {}, plan)).split(/ {2,}/)[0]!.slice(1)
+    expect((await task(planned)).task!.due).toBe('2099-12-01T17:00:00.000Z')
+    const both = await vb(['tasks', 'create', 'elsewhere', '--file', '-', '--due', '2099-12-01T17:00Z'], {}, plan)
+    expect([both.code, both.stderr.split('\n')[0]]).toEqual([2, "error: --due is one task's: with --file, each task in the file has its own."])
+    const unplanned = await vb(['tasks', 'create', 'elsewhere', '--file', '-'], {}, JSON.stringify([{ text: 'when?', due: 'someday' }]))
+    expect([unplanned.code, unplanned.stderr.split('\n')[0]]).toEqual([2, "error: Task 1 of stdin is due someday, which isn't a time like 2026-10-08T09:00:00Z."])
 
     // Each row says how long until it's due, or how late it is.
     const rows = (await ok(['tasks', 'dated'])).trimEnd().split('\n').map((line) => line.split(/ {2,}/))
@@ -212,8 +220,10 @@ describe("vb tasks, with the claim it keeps", () => {
     // Nothing is said, not left out, and both is one too many.
     const bare = await vb(['tasks', 'due', soon])
     expect([bare.code, bare.stderr.split('\n')[0]]).toEqual([2, 'error: Missing when it is due, such as 2026-12-01T17:00Z, or --none for no time.'])
-    const both = await vb(['tasks', 'due', soon, '2099-12-01T17:00Z', '--none'])
-    expect([both.code, both.stderr.split('\n')[0]]).toEqual([2, `error: A time is when #${soon} is due, and --none is no time: pass one of them.`])
+    const twice = await vb(['tasks', 'due', soon, '2099-12-01T17:00Z', '--none'])
+    expect([twice.code, twice.stderr.split('\n')[0]]).toEqual([2, `error: A time is when #${soon} is due, and --none is no time: pass one of them.`])
+    const word = await vb(['tasks', 'due', soon, 'tomorrow'])
+    expect([word.code, word.stderr.split('\n')[0]]).toEqual([2, "error: A due date is a time like 2026-10-08T09:00:00Z, and tomorrow isn't one."])
     // It's its owner's to change, and a finished task's stays as it was.
     const theirs = await vb(['tasks', 'due', soon, '--none'], await deployment())
     expect([theirs.code, theirs.stderr.split('\n')[0]]).toEqual([1, `error: You can't change when task #${soon} is due. It's someone else's.`])

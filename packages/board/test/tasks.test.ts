@@ -8,7 +8,8 @@ import type { Can } from '../src/access/index.ts'
 import type { Middleware, Watcher } from '../src/server/index.ts'
 import type { BoardEvent } from '../src/contract/events.ts'
 import { block } from '../src/contract/blocks.ts'
-import { foldMessages, type MessagesState } from '../src/contract/folds.ts'
+import { foldMessages, type MessagesState, type Task } from '../src/contract/folds.ts'
+import { taskView } from '../src/server/feed.ts'
 import { memory } from '../src/store/memory.ts'
 import { http } from '../src/backend-http/index.ts'
 import { board as projectBoard, BOARD_URL, caller, deploymentToken, personToken, testBoard, workflowToken } from './harness.ts'
@@ -1899,6 +1900,12 @@ describe("the fold, for whoever folds the board's events themselves", () => {
     expect(dueOf(created, claimed(1), ['task.completed', { ...about, epoch: 1, result: null, by }], dated).task).toMatchObject({ state: 'completed', due: null })
     expect(dueOf(created, ['task.canceled', { ...about, reason: 'no', by }], dated).task).toMatchObject({ state: 'canceled', due: null })
     expect(folded(['task.due_changed', { id: 2, thread: 'root', due: at(HOUR), by }]).byId[2]!.task).toBeUndefined()
+  })
+
+  it('shows a task kept before due dates, which the tables hold as it was folded then, with none', () => {
+    const kept = folded(created).byId[1]!.task!
+    const { due: _due, ...before } = kept
+    expect(taskView(before as Task).due).toBeNull()
   })
 
   it('keeps tasks on roots that are there: a reply is no task, and a deleted root wears no label', () => {

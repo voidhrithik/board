@@ -753,9 +753,9 @@ function onlyPrincipalFlags(verb: 'create' | 'update' | 'explain') {
 }
 
 /** A time flag: anything `Date` reads, as ISO. */
-function instant(flag: string, value: string): string {
+function instant(flag: string, value: string, takes = `--${flag} takes`): string {
   const time = new Date(value)
-  if (Number.isNaN(time.getTime())) throw usage(`--${flag} takes a time like 2026-10-08T09:00:00Z, and ${value} isn't one.`)
+  if (Number.isNaN(time.getTime())) throw usage(`${takes} a time like 2026-10-08T09:00:00Z, and ${value} isn't one.`)
   return time.toISOString()
 }
 
@@ -2224,7 +2224,7 @@ async function createPlan(target: string, text: string | undefined, path: string
   if (text !== undefined) throw usage("Text is one task's: with --file, each task in the file has its own.")
   // What the file holds comes first: one task's text in it means these options are that task's, on stdin.
   const parsed = await planSource(path)
-  const own = (['label', 'needs', 'for', 'claim', 'lease', 'no-sync'] as const).find((name) => (flags as Record<string, unknown>)[name] !== undefined && (flags as Record<string, unknown>)[name] !== false)
+  const own = (['label', 'needs', 'for', 'due', 'claim', 'lease', 'no-sync'] as const).find((name) => (flags as Record<string, unknown>)[name] !== undefined && (flags as Record<string, unknown>)[name] !== false)
   if (own !== undefined) throw usage(`--${own} is one task's: with --file, each task in the file has its own.`)
   const board = client()
   const tasks = await planFrom(parsed, path, board)
@@ -2353,9 +2353,16 @@ async function planFrom(parsed: unknown, path: string, board: Board): Promise<Ta
   const named = plan.some((task) => typeof task.for === 'string' && !task.for.includes(':'))
   const principal = named ? (await board.me()).principal : ''
   const keys = new Set(plan.flatMap((task) => (typeof task.key === 'string' ? [task.key] : [])))
-  return plan.map((task) => ({
+  /** A task's due date, as `--due` takes one: any time Date reads, in UTC. */
+  const dueOf = (due: string, at: number) => {
+    const time = new Date(due)
+    if (Number.isNaN(time.getTime())) throw usage(`Task ${at + 1} of ${where} is due ${due}, which isn't a time like 2026-10-08T09:00:00Z.`, { next: [planHelp()] })
+    return time.toISOString()
+  }
+  return plan.map((task, at) => ({
     ...task,
     ...(Array.isArray(task.needs) ? { needs: task.needs.map((need) => boardNeed(need, keys)) } : {}),
+    ...(typeof task.due === 'string' ? { due: dueOf(task.due, at) } : {}),
     ...(typeof task.for === 'string' && !task.for.includes(':') ? { for: profileActor(principal, task.for) } : {}),
   })) as TaskInBatch[]
 }
@@ -2805,11 +2812,11 @@ async function tasks(args: string[]): Promise<number> {
     }
     case 'due': {
       const [, when, extra] = rest
-      if (extra !== undefined) throw usage(`tasks due takes a task and a time: ${extra} is one too many.`)
-      if (flags.none && when !== undefined) throw usage(`A time is when ${ref(id)} is due, and --none is no time: pass one of them.`)
-      if (!flags.none && when === undefined) throw usage('Missing when it is due, such as 2026-12-01T17:00Z, or --none for no time.', { reason: 'missing_arguments' })
-      const task = await board.tasks.due(id, when === undefined ? null : instant('due', when))
-      const due = task.task?.due ?? null
+      if (extra) throw usage(`tasks due takes a task and a time: ${extra} is one too many.`)
+      if (flags.none && when) throw usage(`A time is when ${ref(id)} is due, and --none is no time: pass one of them.`)
+      if (!flags.none && !when) throw usage('Missing when it is due, such as 2026-12-01T17:00Z, or --none for no time.', { reason: 'missing_arguments' })
+      const task = await board.tasks.due(id, when ? instant('due', when, 'A due date is') : null)
+      const due = task.task?.due || null
       if (flags.json) result({ task, outcome: 'set' })
       else out(due ? `${messageRef(id)} is due ${shortTime(due)}` : `${messageRef(id)} has no due date`)
       return 0

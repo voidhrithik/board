@@ -122,6 +122,8 @@ export function taskView(task: Task): TaskView {
     needs: needs.map(ref),
     claim: claim && { actor: claim.actor, until: claim.until },
     blocked: task.blocked && { ...task.blocked },
+    // A task the tables kept before due dates has no key for one.
+    due: task.due || null,
   }
 }
 

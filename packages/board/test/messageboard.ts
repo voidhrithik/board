@@ -807,7 +807,7 @@ function fakeBoard(shared: Shared, boardId: string) {
   const batchDigest = (body: Record<string, any>) =>
     JSON.stringify([
       body.channelId !== undefined ? { id: body.channelId } : { name: body.channel },
-      (body.tasks as Record<string, any>[]).map((task) => [task.key ?? null, task.text, Object.entries(task.labels ?? {}).sort(([a], [b]) => (a < b ? -1 : 1)), task.noSync ?? false, task.attachments ?? [], task.needs ?? [], task.for ?? null, task.due ?? null]),
+      (body.tasks as Record<string, any>[]).map((task) => [task.key ?? null, task.text, Object.entries(task.labels ?? {}).sort(([a], [b]) => (a < b ? -1 : 1)), task.noSync ?? false, task.attachments ?? [], task.needs ?? [], task.for ?? null, task.due || null]),
     ])
   /** A profile's name, as an actor ID ends with one. */
   const PROFILE_PART = /^[a-z0-9][a-z0-9-]{0,31}$/
@@ -977,7 +977,7 @@ function fakeBoard(shared: Shared, boardId: string) {
 
   /** When a task is due, as a body says it: milliseconds, or null or nothing for no time. */
   function checkedDue(due: unknown): number | null {
-    if (due === undefined || due === null) return null
+    if (!due) return null
     if (!Number.isInteger(due) || (due as number) < 0) throw bad('due is a time in milliseconds, or null.')
     return due as number
   }
@@ -1145,7 +1145,7 @@ function fakeBoard(shared: Shared, boardId: string) {
       const message = post(actor, thread, { text: task.text, ...(task.labels ? { labels: task.labels } : {}), ...(task.attachments?.length ? { attachments: task.attachments } : {}), ...(task.noSync ? { noSync: true } : {}) })
       message.createdAt = thread.lastActivityAt = first + at
       thread.lastMessage = { ...thread.lastMessage!, createdAt: first + at }
-      makeTask(thread, actor, { owner, needs: [...there[at]!, ...inside[at]!.map((other) => made[other]!.id)], for: task.for ?? null, due: task.due ?? null, waits: false, claim: null }, body.operationId)
+      makeTask(thread, actor, { owner, needs: [...there[at]!, ...inside[at]!.map((other) => made[other]!.id)], for: task.for ?? null, due: task.due || null, waits: false, claim: null }, body.operationId)
     }
     if (named !== null) keyed.set(named, { digest, channelId: channel.id, threads: made.map((thread) => thread.id) })
     return { made }

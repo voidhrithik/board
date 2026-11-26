@@ -1,5 +1,6 @@
 import type { BoardEventView, GrantView, Me, MessageView, PrincipalView, ScheduleView, SourceRead, SyncedView, TaskView, ThreadSummaryView } from '../api/routes.ts'
 import { displayEmoji } from '../contract/emoji.ts'
+import { taskFinished } from '../contract/schemas.ts'
 import { fileSize } from '../contract/files.ts'
 import { byVercelBot, displayText } from '../contract/bots.ts'
 import { extractMentions, isEmail, replaceMentions } from '../contract/mentions.ts'
@@ -175,14 +176,11 @@ function taskState(message: MessageView, task: TaskView, names: Map<string, stri
   else if (task.state === 'failed' || task.state === 'canceled') parts.push(task.state, ...(task.reason ? [noteLine(task.reason)] : []))
   else parts.push(task.state)
   if (task.needs.length) parts.push(`needs ${task.needs.map((id) => `#${id}`).join(' ')}`)
-  if (task.due && !done(task)) parts.push(dueNote(task.due, now))
+  if (task.due && !taskFinished(task.state)) parts.push(dueNote(task.due, now))
   if (task.for !== null) parts.push(`for ${profileOf(task.for)}`)
   if (task.owner !== message.by.principal) parts.push(`owner ${named(task.owner)}`)
   return parts.join(' · ')
 }
-
-/** Whether a task has finished: its due date says nothing then. */
-const done = (task: TaskView) => task.state === 'completed' || task.state === 'failed' || task.state === 'canceled'
 
 /** A claim as the CLI says it: the task, how long it's yours, and what it is. */
 export const claimLine = (task: MessageView, until: string, now = Date.now()): string => `#${task.id}  yours for ${leaseLeft(until, now)}  ${firstLine(task, 52)}`
@@ -194,11 +192,12 @@ export const claimLine = (task: MessageView, until: string, now = Date.now()): s
 function taskNote(message: MessageView, task: TaskView, room: number, now = Date.now()): string {
   if (task.state === 'completed' && task.result) return noteLine(task.result, room)
   if ((task.state === 'failed' || task.state === 'canceled') && task.reason) return noteLine(task.reason, room)
-  if (task.state === 'blocked' && task.blocked) return noteLine(task.blocked.reason, room)
+  // An open task's due date says when, after what it's held for.
+  const due = task.due && !taskFinished(task.state) ? dueNote(task.due, now) : ''
+  if (task.state === 'blocked' && task.blocked) return [noteLine(task.blocked.reason, due ? room - due.length - 2 : room), due].filter(Boolean).join('  ')
   // Its state has a column of its own, so the label that says it again is left out.
   const own = Object.entries(message.labels).filter(([key]) => !key.startsWith('board.')).map(([key, value]) => `${key}=${lineText(value)}`).join(' ')
   const needs = task.state === 'waiting' && task.needs.length ? `needs ${task.needs.map((id) => `#${id}`).join(' ')}` : ''
-  const due = task.due && !done(task) ? dueNote(task.due, now) : ''
   return [own, needs, due].filter(Boolean).join('  ')
 }
 

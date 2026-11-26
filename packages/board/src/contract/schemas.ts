@@ -152,6 +152,8 @@ export const TaskState = z.enum(['waiting', 'ready', 'claimed', 'blocked', 'comp
 export type TaskState = z.infer<typeof TaskState>
 /** The states a task can still leave by being worked: `GET /tasks` lists these by default. */
 export const OPEN_TASK_STATES = ['waiting', 'ready', 'claimed', 'blocked'] as const satisfies readonly TaskState[]
+/** Whether a task in `state` has finished: completed, failed, or canceled. */
+export const taskFinished = (state: TaskState) => !(OPEN_TASK_STATES as readonly TaskState[]).includes(state)
 
 /** A task's result or reason: a line or two. */
 export const TaskNote = z
